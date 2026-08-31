@@ -27,6 +27,9 @@ class BoardTile {
 
 class GameState extends ChangeNotifier {
   static const double _specialTileSpawnRate = 0.12;
+  static const Duration _rapidTapWindow = Duration(milliseconds: 350);
+  static const int _rapidTapLimit = 3;
+  static const Duration _rapidTapPenaltyDuration = Duration(seconds: 1);
 
   GameState({
     this.campaign = defaultCampaignConfig,
@@ -46,8 +49,12 @@ class GameState extends ChangeNotifier {
 
   bool _isPlayerFrozen = false;
   bool _isBotFrozen = false;
+  bool _isRapidTapPenaltyActive = false;
   Timer? _playerFreezeTimer;
   Timer? _botFreezeTimer;
+  DateTime? _lastPlayerTapAt;
+  int _rapidTapCount = 0;
+  bool _isStartCountdownRequested = false;
   String _gameResult = '';
 
   int get currentStage => _currentStage;
@@ -58,6 +65,8 @@ class GameState extends ChangeNotifier {
   GameStateStatus get status => _status;
   bool get isPlayerFrozen => _isPlayerFrozen;
   bool get isBotFrozen => _isBotFrozen;
+  bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
+  bool get isStartCountdownRequested => _isStartCountdownRequested;
   String get gameResult => _gameResult;
   String get brandLogoImage => campaign.backImageUrl;
   int get boardSize => _stageConfig.boardSize;
@@ -87,6 +96,10 @@ class GameState extends ChangeNotifier {
     _gameResult = '';
     _isPlayerFrozen = false;
     _isBotFrozen = false;
+    _isRapidTapPenaltyActive = false;
+    _lastPlayerTapAt = null;
+    _rapidTapCount = 0;
+    _isStartCountdownRequested = false;
     _timer?.cancel();
     _playerFreezeTimer?.cancel();
     _botFreezeTimer?.cancel();
@@ -113,6 +126,17 @@ class GameState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void requestStartCountdown() {
+    if (_status != GameStateStatus.ready) return;
+
+    _isStartCountdownRequested = true;
+    notifyListeners();
+  }
+
+  void consumeStartCountdownRequest() {
+    _isStartCountdownRequested = false;
+  }
+
   void pauseGame() {
     if (_status != GameStateStatus.playing) return;
 
@@ -123,7 +147,10 @@ class GameState extends ChangeNotifier {
 
   bool flipTile(int row, int col, TileOwner owner) {
     if (_status != GameStateStatus.playing) return false;
-    if (owner == TileOwner.player && _isPlayerFrozen) return false;
+    if (owner == TileOwner.player) {
+      if (_isPlayerFrozen) return false;
+      if (_registerPlayerTap()) return false;
+    }
     if (owner == TileOwner.bot && _isBotFrozen) return false;
 
     final tile = _board[row][col];
@@ -222,11 +249,38 @@ class GameState extends ChangeNotifier {
     }
 
     _isPlayerFrozen = true;
+    _isRapidTapPenaltyActive = false;
     _playerFreezeTimer?.cancel();
     _playerFreezeTimer = Timer(const Duration(seconds: 2), () {
       _isPlayerFrozen = false;
       notifyListeners();
     });
+  }
+
+  bool _registerPlayerTap() {
+    final now = DateTime.now();
+    final previousTap = _lastPlayerTapAt;
+    _lastPlayerTapAt = now;
+
+    if (previousTap == null || now.difference(previousTap) > _rapidTapWindow) {
+      _rapidTapCount = 1;
+      return false;
+    }
+
+    _rapidTapCount++;
+    if (_rapidTapCount < _rapidTapLimit) return false;
+
+    _rapidTapCount = 0;
+    _isPlayerFrozen = true;
+    _isRapidTapPenaltyActive = true;
+    _playerFreezeTimer?.cancel();
+    _playerFreezeTimer = Timer(_rapidTapPenaltyDuration, () {
+      _isPlayerFrozen = false;
+      _isRapidTapPenaltyActive = false;
+      notifyListeners();
+    });
+    notifyListeners();
+    return true;
   }
 
   void _spawnSpecialTile() {

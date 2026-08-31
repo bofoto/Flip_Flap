@@ -53,7 +53,7 @@ const defaultCampaignConfig = CampaignConfig(
       ),
     ),
     CampaignStage(
-      boardSize: 6,
+      boardSize: 5,
       maxTime: 30,
       productImageUrl:
           'https://images.unsplash.com/photo-1541643600914-78b084683601?w=800',
@@ -64,7 +64,7 @@ const defaultCampaignConfig = CampaignConfig(
       ),
     ),
     CampaignStage(
-      boardSize: 8,
+      boardSize: 6,
       maxTime: 45,
       productImageUrl:
           'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800',

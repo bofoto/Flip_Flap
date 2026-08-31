@@ -22,6 +22,15 @@ void main() {
       expect(gameState.selectStage(2), isFalse);
       expect(gameState.currentStage, 1);
     });
+
+    test('can request the stage countdown before starting', () {
+      final gameState = GameState();
+
+      gameState.requestStartCountdown();
+
+      expect(gameState.isStartCountdownRequested, isTrue);
+      expect(gameState.status, GameStateStatus.ready);
+    });
   });
 
   group('Tile flipping', () {
@@ -37,6 +46,16 @@ void main() {
       expect(gameState.board[0][1].owner, TileOwner.bot);
       expect(gameState.flipTile(0, 1, TileOwner.player), isTrue);
       expect(gameState.board[0][1].owner, TileOwner.player);
+    });
+
+    test('freezes the player after three rapid taps', () {
+      final gameState = GameState()..startGame();
+
+      expect(gameState.flipTile(0, 1, TileOwner.player), isTrue);
+      expect(gameState.flipTile(0, 3, TileOwner.player), isTrue);
+      expect(gameState.flipTile(1, 0, TileOwner.player), isFalse);
+      expect(gameState.isPlayerFrozen, isTrue);
+      expect(gameState.isRapidTapPenaltyActive, isTrue);
     });
   });
 
@@ -111,11 +130,19 @@ void main() {
       _forceStageClear(gameState);
       gameState.selectStage(2);
 
+      expect(gameState.boardSize, 5);
+
       expect(
         gameState.currentProductImage,
         contains('photo-1541643600914-78b084683601'),
       );
       expect(gameState.currentReward.code, 'POP-2026-GOODS');
+
+      gameState.startGame();
+      _forceStageClear(gameState);
+      gameState.selectStage(3);
+
+      expect(gameState.boardSize, 6);
     });
 
     test('can swap campaign assets without changing game logic', () {

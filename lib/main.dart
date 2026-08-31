@@ -149,7 +149,7 @@ class _ResultOverlay extends StatelessWidget {
                             text: 'NEXT CHALLENGE',
                             onPressed: () {
                               gameState.selectStage(gameState.currentStage + 1);
-                              gameState.startGame();
+                              gameState.requestStartCountdown();
                             },
                           ),
                           const SizedBox(height: 10),

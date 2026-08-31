@@ -19,6 +19,8 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   BotAI? _botAI;
+  int? _countdown;
+  bool _isStartingStage = false;
 
   @override
   void dispose() {
@@ -31,33 +33,44 @@ class _GameScreenState extends State<GameScreen> {
     final gameState = context.watch<GameState>();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncBot(gameState);
+      if (!mounted) return;
+      _syncBot(gameState);
+      if (gameState.isStartCountdownRequested && !_isStartingStage) {
+        _startStage();
+      }
     });
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _Header(gameState: gameState),
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
               _ScoreGauge(gameState: gameState),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
               _TimerAndStatus(gameState: gameState),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
               Expanded(
                 child: Center(
                   child: AspectRatio(
                     aspectRatio: 1,
-                    child: _Board(gameState: gameState),
+                    child: _Board(
+                      gameState: gameState,
+                      countdown: _countdown,
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
-              _ControlPanel(gameState: gameState),
+              const SizedBox(height: 12),
+              _ControlPanel(
+                gameState: gameState,
+                onStart: _startStage,
+                isStartingStage: _isStartingStage,
+              ),
             ],
           ),
         ),
@@ -84,6 +97,30 @@ class _GameScreenState extends State<GameScreen> {
     }
 
     _botAI!.start();
+  }
+
+  Future<void> _startStage() async {
+    if (_isStartingStage) return;
+
+    context.read<GameState>().consumeStartCountdownRequest();
+
+    setState(() {
+      _isStartingStage = true;
+      _countdown = 3;
+    });
+
+    for (var value = 3; value >= 1; value--) {
+      if (!mounted) return;
+      setState(() => _countdown = value);
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _countdown = null;
+      _isStartingStage = false;
+    });
+    context.read<GameState>().startGame();
   }
 }
 
@@ -370,7 +407,14 @@ class _TimerAndStatus extends StatelessWidget {
         Row(
           children: [
             if (gameState.isPlayerFrozen)
-              const StatusBadge(text: 'YOU FROZEN!', color: Colors.blueAccent),
+              StatusBadge(
+                text: gameState.isRapidTapPenaltyActive
+                    ? 'TOO FAST: 1s'
+                    : 'YOU FROZEN!',
+                color: gameState.isRapidTapPenaltyActive
+                    ? Colors.redAccent
+                    : Colors.blueAccent,
+              ),
             if (gameState.isPlayerFrozen && gameState.isBotFrozen)
               const SizedBox(width: 8),
             if (gameState.isBotFrozen)
@@ -416,54 +460,74 @@ class StatusBadge extends StatelessWidget {
 }
 
 class _Board extends StatelessWidget {
-  const _Board({required this.gameState});
+  const _Board({
+    required this.gameState,
+    required this.countdown,
+  });
 
   final GameState gameState;
+  final int? countdown;
 
   @override
   Widget build(BuildContext context) {
     final size = gameState.boardSize;
 
-    return GridView.builder(
-      key: ValueKey('board_grid_${gameState.currentStage}'),
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: size,
-        crossAxisSpacing: 6,
-        mainAxisSpacing: 6,
-      ),
-      itemCount: size * size,
-      itemBuilder: (context, index) {
-        final row = index ~/ size;
-        final col = index % size;
-        final tile = gameState.board[row][col];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        GridView.builder(
+          key: ValueKey('board_grid_${gameState.currentStage}'),
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: size,
+            crossAxisSpacing: 5,
+            mainAxisSpacing: 5,
+          ),
+          itemCount: size * size,
+          itemBuilder: (context, index) {
+            final row = index ~/ size;
+            final col = index % size;
+            final tile = gameState.board[row][col];
 
-        return FlipTileWidget(
-          key: ValueKey('tile_${row}_$col'),
-          tile: tile,
-          boardSize: size,
-          productImageUrl: gameState.currentProductImage,
-          backImageUrl: gameState.brandLogoImage,
-          onTap: () => gameState.flipTile(row, col, TileOwner.player),
-        );
-      },
+            return FlipTileWidget(
+              key: ValueKey('tile_${row}_$col'),
+              tile: tile,
+              boardSize: size,
+              productImageUrl: gameState.currentProductImage,
+              backImageUrl: gameState.brandLogoImage,
+              onTap: () => gameState.flipTile(row, col, TileOwner.player),
+            );
+          },
+        ),
+        if (countdown != null)
+          _StageCountdownOverlay(
+            imageUrl: gameState.currentProductImage,
+            countdown: countdown!,
+          ),
+      ],
     );
   }
 }
 
 class _ControlPanel extends StatelessWidget {
-  const _ControlPanel({required this.gameState});
+  const _ControlPanel({
+    required this.gameState,
+    required this.onStart,
+    required this.isStartingStage,
+  });
 
   final GameState gameState;
+  final VoidCallback onStart;
+  final bool isStartingStage;
 
   @override
   Widget build(BuildContext context) {
     if (gameState.status == GameStateStatus.ready ||
         gameState.status == GameStateStatus.ended) {
       return NeonButton(
-        text: 'START GAME',
+        text: isStartingStage ? 'GET READY' : 'START GAME',
         color: Colors.cyanAccent,
-        onPressed: gameState.startGame,
+        onPressed: isStartingStage ? () {} : onStart,
       );
     }
 
@@ -486,6 +550,42 @@ class _ControlPanel extends StatelessWidget {
             text: 'RESET',
             color: Colors.redAccent,
             onPressed: gameState.initializeGame,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StageCountdownOverlay extends StatelessWidget {
+  const _StageCountdownOverlay({
+    required this.imageUrl,
+    required this.countdown,
+  });
+
+  final String imageUrl;
+  final int countdown;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.network(imageUrl, fit: BoxFit.cover),
+        ColoredBox(color: faded(const Color(0xFF0F172A), 0.35)),
+        Center(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: Text(
+              '$countdown',
+              key: ValueKey(countdown),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 88,
+                fontWeight: FontWeight.w900,
+                shadows: [Shadow(color: Colors.cyanAccent, blurRadius: 16)],
+              ),
+            ),
           ),
         ),
       ],
