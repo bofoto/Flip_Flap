@@ -71,6 +71,8 @@ class _ResultOverlay extends StatelessWidget {
     final accent = isPlayerWinner ? Colors.cyanAccent : Colors.pinkAccent;
     final hasNextStage =
         isPlayerWinner && gameState.currentStage < gameState.maxStage;
+    final hasFinalReward =
+        isPlayerWinner && gameState.currentStage == gameState.maxStage;
 
     return Positioned.fill(
       child: Container(
@@ -124,10 +126,10 @@ class _ResultOverlay extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 20),
-                        if (isPlayerWinner) ...[
+                        if (hasFinalReward) ...[
                           _Coupon(reward: gameState.currentReward),
                           const SizedBox(height: 24),
-                        ] else ...[
+                        ] else if (!isPlayerWinner) ...[
                           const Icon(
                             Icons.sentiment_very_dissatisfied,
                             size: 48,

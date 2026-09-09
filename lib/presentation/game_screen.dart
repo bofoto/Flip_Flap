@@ -1,6 +1,8 @@
 import 'dart:math';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../domain/bot_ai.dart';
@@ -495,7 +497,11 @@ class _Board extends StatelessWidget {
               boardSize: size,
               productImageUrl: gameState.currentProductImage,
               backImageUrl: gameState.brandLogoImage,
-              onTap: () => gameState.flipTile(row, col, TileOwner.player),
+              onTap: () {
+                if (gameState.flipTile(row, col, TileOwner.player)) {
+                  HapticFeedback.selectionClick();
+                }
+              },
             );
           },
         ),
@@ -503,6 +509,11 @@ class _Board extends StatelessWidget {
           _StageCountdownOverlay(
             imageUrl: gameState.currentProductImage,
             countdown: countdown!,
+          ),
+        if (gameState.status == GameStateStatus.finishing)
+          _GameFinishOverlay(
+            reason: gameState.endReason,
+            isPlayerWinner: gameState.gameResult.contains('PLAYER'),
           ),
       ],
     );
@@ -529,6 +540,10 @@ class _ControlPanel extends StatelessWidget {
         color: Colors.cyanAccent,
         onPressed: isStartingStage ? () {} : onStart,
       );
+    }
+
+    if (gameState.status == GameStateStatus.finishing) {
+      return const SizedBox(height: 52);
     }
 
     return Row(
@@ -573,6 +588,28 @@ class _StageCountdownOverlay extends StatelessWidget {
       children: [
         Image.network(imageUrl, fit: BoxFit.cover),
         ColoredBox(color: faded(const Color(0xFF0F172A), 0.35)),
+        Positioned.fill(
+          child: TweenAnimationBuilder<double>(
+            key: ValueKey(countdown),
+            tween: Tween(begin: 1, end: 0.78),
+            duration: const Duration(milliseconds: 950),
+            curve: Curves.easeOut,
+            builder: (context, scale, child) {
+              return Center(
+                child: FractionallySizedBox(
+                  widthFactor: scale,
+                  heightFactor: scale,
+                  child: child,
+                ),
+              );
+            },
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.cyanAccent, width: 4),
+              ),
+            ),
+          ),
+        ),
         Center(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
@@ -589,6 +626,80 @@ class _StageCountdownOverlay extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _GameFinishOverlay extends StatelessWidget {
+  const _GameFinishOverlay({
+    required this.reason,
+    required this.isPlayerWinner,
+  });
+
+  final GameEndReason? reason;
+  final bool isPlayerWinner;
+
+  @override
+  Widget build(BuildContext context) {
+    final isTimeExpired = reason == GameEndReason.timeExpired;
+    final accent = isPlayerWinner ? Colors.amberAccent : Colors.pinkAccent;
+    final title = isTimeExpired
+        ? 'TIME UP'
+        : isPlayerWinner
+            ? 'BOARD COMPLETE!'
+            : 'BOARD TAKEN!';
+    final subtitle = isPlayerWinner ? 'YOU WIN' : 'BOT WINS';
+
+    return IgnorePointer(
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 1200),
+        curve: Curves.easeOut,
+        builder: (context, progress, child) {
+          final flash = sin(progress * pi * 5).abs() * (1 - progress) * 0.7;
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(color: faded(accent, flash)),
+              ColoredBox(color: faded(Colors.black, 0.25 + progress * 0.2)),
+              Center(
+                child: Opacity(
+                  opacity: min(1, progress * 2),
+                  child: Transform.scale(
+                    scale: 0.82 + min(0.18, progress * 0.18),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w900,
+                            shadows: [Shadow(color: accent, blurRadius: 18)],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -630,7 +741,7 @@ class NeonButton extends StatelessWidget {
   }
 }
 
-class FlipTileWidget extends StatelessWidget {
+class FlipTileWidget extends StatefulWidget {
   const FlipTileWidget({
     super.key,
     required this.tile,
@@ -647,54 +758,69 @@ class FlipTileWidget extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<FlipTileWidget> createState() => _FlipTileWidgetState();
+}
+
+class _FlipTileWidgetState extends State<FlipTileWidget> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    final isPlayerTile = tile.owner == TileOwner.player;
+    final isPlayerTile = widget.tile.owner == TileOwner.player;
     final itemIcon = _itemIcon;
 
     return GestureDetector(
-      onTap: onTap,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween<double>(begin: 0, end: isPlayerTile ? 0 : pi),
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeOutBack,
-        builder: (context, angle, child) {
-          final isFront = angle < pi / 2;
-          final transform = Matrix4.identity()
-            ..setEntry(3, 2, 0.002)
-            ..rotateY(angle);
+      onTap: widget.onTap,
+      onTapDown: (_) => setState(() => _isPressed = true),
+      onTapUp: (_) => setState(() => _isPressed = false),
+      onTapCancel: () => setState(() => _isPressed = false),
+      child: AnimatedScale(
+        scale: _isPressed ? 0.92 : 1,
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: isPlayerTile ? 0 : pi),
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutBack,
+          builder: (context, angle, child) {
+            final isFront = angle < pi / 2;
+            final transform = Matrix4.identity()
+              ..setEntry(3, 2, 0.002)
+              ..rotateY(angle);
 
-          return Transform(
-            transform: transform,
-            alignment: Alignment.center,
-            child: isFront
-                ? _TileFace(
-                    borderColor: Colors.cyan,
-                    shadowColor: Colors.cyanAccent,
-                    icon: itemIcon,
-                    child: _ProductImagePiece(
-                      tile: tile,
-                      boardSize: boardSize,
-                      imageUrl: productImageUrl,
-                    ),
-                  )
-                : Transform(
-                    transform: Matrix4.identity()..rotateY(pi),
-                    alignment: Alignment.center,
-                    child: _TileFace(
-                      borderColor: Colors.pink,
-                      shadowColor: Colors.pinkAccent,
+            return Transform(
+              transform: transform,
+              alignment: Alignment.center,
+              child: isFront
+                  ? _TileFace(
+                      borderColor: Colors.cyan,
+                      shadowColor: Colors.cyanAccent,
                       icon: itemIcon,
-                      child: _BackImage(imageUrl: backImageUrl),
+                      child: _ProductImagePiece(
+                        tile: widget.tile,
+                        boardSize: widget.boardSize,
+                        imageUrl: widget.productImageUrl,
+                      ),
+                    )
+                  : Transform(
+                      transform: Matrix4.identity()..rotateY(pi),
+                      alignment: Alignment.center,
+                      child: _TileFace(
+                        borderColor: Colors.pink,
+                        shadowColor: Colors.pinkAccent,
+                        icon: itemIcon,
+                        child: _BackImage(imageUrl: widget.backImageUrl),
+                      ),
                     ),
-                  ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
   Widget? get _itemIcon {
-    return switch (tile.type) {
+    return switch (widget.tile.type) {
       TileType.bomb =>
         const Icon(Icons.brightness_7, color: Colors.white, size: 24),
       TileType.line =>
@@ -736,8 +862,28 @@ class _TileFace extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          child,
-          if (icon != null) Center(child: icon),
+          if (icon == null)
+            child
+          else ...[
+            ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 2.5, sigmaY: 2.5),
+              child: child,
+            ),
+            ColoredBox(color: faded(Colors.black, 0.3)),
+            Center(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: faded(Colors.black, 0.45),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: icon,
+                ),
+              ),
+            ),
+          ],
           IgnorePointer(
             child: DecoratedBox(
               decoration: BoxDecoration(

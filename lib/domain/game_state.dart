@@ -9,7 +9,9 @@ enum TileOwner { player, bot, none }
 
 enum TileType { normal, bomb, line, freeze }
 
-enum GameStateStatus { ready, playing, paused, ended }
+enum GameStateStatus { ready, playing, paused, finishing, ended }
+
+enum GameEndReason { timeExpired, boardCovered }
 
 class BoardTile {
   BoardTile({
@@ -30,6 +32,7 @@ class GameState extends ChangeNotifier {
   static const Duration _rapidTapWindow = Duration(milliseconds: 350);
   static const int _rapidTapLimit = 3;
   static const Duration _rapidTapPenaltyDuration = Duration(seconds: 1);
+  static const Duration _resultDelay = Duration(milliseconds: 1400);
 
   GameState({
     this.campaign = defaultCampaignConfig,
@@ -46,6 +49,7 @@ class GameState extends ChangeNotifier {
   int _timeLeft = 30;
   GameStateStatus _status = GameStateStatus.ready;
   Timer? _timer;
+  Timer? _resultTimer;
 
   bool _isPlayerFrozen = false;
   bool _isBotFrozen = false;
@@ -56,6 +60,7 @@ class GameState extends ChangeNotifier {
   int _rapidTapCount = 0;
   bool _isStartCountdownRequested = false;
   String _gameResult = '';
+  GameEndReason? _endReason;
 
   int get currentStage => _currentStage;
   int get unlockedStage => _unlockedStage;
@@ -68,6 +73,7 @@ class GameState extends ChangeNotifier {
   bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
   bool get isStartCountdownRequested => _isStartCountdownRequested;
   String get gameResult => _gameResult;
+  GameEndReason? get endReason => _endReason;
   String get brandLogoImage => campaign.backImageUrl;
   int get boardSize => _stageConfig.boardSize;
   int get maxTime => _stageConfig.maxTime;
@@ -94,6 +100,7 @@ class GameState extends ChangeNotifier {
     _status = GameStateStatus.ready;
     _timeLeft = maxTime;
     _gameResult = '';
+    _endReason = null;
     _isPlayerFrozen = false;
     _isBotFrozen = false;
     _isRapidTapPenaltyActive = false;
@@ -101,6 +108,7 @@ class GameState extends ChangeNotifier {
     _rapidTapCount = 0;
     _isStartCountdownRequested = false;
     _timer?.cancel();
+    _resultTimer?.cancel();
     _playerFreezeTimer?.cancel();
     _botFreezeTimer?.cancel();
 
@@ -184,25 +192,23 @@ class GameState extends ChangeNotifier {
   }
 
   void endGame() {
-    _timer?.cancel();
-    _status = GameStateStatus.ended;
-
     if (playerScore > botScore) {
-      _gameResult = 'PLAYER WINS!';
-      _unlockNextStage();
+      _finishGame(
+        winner: TileOwner.player,
+        reason: GameEndReason.timeExpired,
+      );
     } else if (botScore > playerScore) {
-      _gameResult = 'BOT WINS!';
+      _finishGame(winner: TileOwner.bot, reason: GameEndReason.timeExpired);
     } else {
-      _gameResult = 'DRAW!';
+      _finishGame(reason: GameEndReason.timeExpired);
     }
-
-    notifyListeners();
   }
 
   void _startCountdown() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_timeLeft <= 0) {
+      if (_timeLeft <= 1) {
+        _timeLeft = 0;
         endGame();
         return;
       }
@@ -305,17 +311,37 @@ class GameState extends ChangeNotifier {
   }
 
   void _endGameWithWinner(TileOwner winner, String suffix) {
+    _finishGame(
+      winner: winner,
+      reason: GameEndReason.boardCovered,
+      suffix: suffix,
+    );
+  }
+
+  void _finishGame({
+    TileOwner? winner,
+    required GameEndReason reason,
+    String? suffix,
+  }) {
     _timer?.cancel();
-    _status = GameStateStatus.ended;
+    _resultTimer?.cancel();
+    _status = GameStateStatus.finishing;
+    _endReason = reason;
 
     if (winner == TileOwner.player) {
-      _gameResult = 'PLAYER WINS!\n($suffix)';
+      _gameResult = suffix == null ? 'PLAYER WINS!' : 'PLAYER WINS!\n($suffix)';
       _unlockNextStage();
+    } else if (winner == TileOwner.bot) {
+      _gameResult = suffix == null ? 'BOT WINS!' : 'BOT WINS!\n($suffix)';
     } else {
-      _gameResult = 'BOT WINS!\n($suffix)';
+      _gameResult = 'DRAW!';
     }
 
     notifyListeners();
+    _resultTimer = Timer(_resultDelay, () {
+      _status = GameStateStatus.ended;
+      notifyListeners();
+    });
   }
 
   void _unlockNextStage() {
@@ -331,6 +357,7 @@ class GameState extends ChangeNotifier {
   @override
   void dispose() {
     _timer?.cancel();
+    _resultTimer?.cancel();
     _playerFreezeTimer?.cancel();
     _botFreezeTimer?.cancel();
     super.dispose();

@@ -107,8 +107,9 @@ void main() {
 
       _forceStageClear(gameState);
 
-      expect(gameState.status, GameStateStatus.ended);
+      expect(gameState.status, GameStateStatus.finishing);
       expect(gameState.gameResult, contains('PLAYER WINS!'));
+      expect(gameState.endReason, GameEndReason.boardCovered);
       expect(gameState.unlockedStage, 2);
     });
   });
