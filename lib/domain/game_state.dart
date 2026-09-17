@@ -13,6 +13,8 @@ enum GameStateStatus { ready, playing, paused, finishing, ended }
 
 enum GameEndReason { timeExpired, boardCovered }
 
+enum GameOutcome { playerWin, botWin, draw }
+
 class BoardTile {
   BoardTile({
     required this.row,
@@ -59,7 +61,7 @@ class GameState extends ChangeNotifier {
   DateTime? _lastPlayerTapAt;
   int _rapidTapCount = 0;
   bool _isStartCountdownRequested = false;
-  String _gameResult = '';
+  GameOutcome? _outcome;
   GameEndReason? _endReason;
 
   int get currentStage => _currentStage;
@@ -72,7 +74,19 @@ class GameState extends ChangeNotifier {
   bool get isBotFrozen => _isBotFrozen;
   bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
   bool get isStartCountdownRequested => _isStartCountdownRequested;
-  String get gameResult => _gameResult;
+  GameOutcome? get outcome => _outcome;
+  String get gameResult {
+    final label = switch (_outcome) {
+      GameOutcome.playerWin => 'PLAYER WINS!',
+      GameOutcome.botWin => 'BOT WINS!',
+      GameOutcome.draw => 'DRAW!',
+      null => '',
+    };
+    return _endReason == GameEndReason.boardCovered
+        ? '$label\n(ALL COVERED!)'
+        : label;
+  }
+
   GameEndReason? get endReason => _endReason;
   String get brandLogoImage => campaign.backImageUrl;
   int get boardSize => _stageConfig.boardSize;
@@ -99,7 +113,7 @@ class GameState extends ChangeNotifier {
   void initializeGame() {
     _status = GameStateStatus.ready;
     _timeLeft = maxTime;
-    _gameResult = '';
+    _outcome = null;
     _endReason = null;
     _isPlayerFrozen = false;
     _isBotFrozen = false;
@@ -304,24 +318,15 @@ class GameState extends ChangeNotifier {
 
   void _checkBoardCoveredWin() {
     if (playerScore == totalTiles) {
-      _endGameWithWinner(TileOwner.player, 'ALL COVERED!');
+      _finishGame(winner: TileOwner.player, reason: GameEndReason.boardCovered);
     } else if (botScore == totalTiles) {
-      _endGameWithWinner(TileOwner.bot, 'ALL COVERED!');
+      _finishGame(winner: TileOwner.bot, reason: GameEndReason.boardCovered);
     }
-  }
-
-  void _endGameWithWinner(TileOwner winner, String suffix) {
-    _finishGame(
-      winner: winner,
-      reason: GameEndReason.boardCovered,
-      suffix: suffix,
-    );
   }
 
   void _finishGame({
     TileOwner? winner,
     required GameEndReason reason,
-    String? suffix,
   }) {
     _timer?.cancel();
     _resultTimer?.cancel();
@@ -329,12 +334,12 @@ class GameState extends ChangeNotifier {
     _endReason = reason;
 
     if (winner == TileOwner.player) {
-      _gameResult = suffix == null ? 'PLAYER WINS!' : 'PLAYER WINS!\n($suffix)';
+      _outcome = GameOutcome.playerWin;
       _unlockNextStage();
     } else if (winner == TileOwner.bot) {
-      _gameResult = suffix == null ? 'BOT WINS!' : 'BOT WINS!\n($suffix)';
+      _outcome = GameOutcome.botWin;
     } else {
-      _gameResult = 'DRAW!';
+      _outcome = GameOutcome.draw;
     }
 
     notifyListeners();

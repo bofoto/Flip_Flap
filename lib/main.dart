@@ -67,8 +67,19 @@ class _ResultOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPlayerWinner = gameState.gameResult.contains('PLAYER');
-    final accent = isPlayerWinner ? Colors.cyanAccent : Colors.pinkAccent;
+    final outcome = gameState.outcome!;
+    final isPlayerWinner = outcome == GameOutcome.playerWin;
+    final isDraw = outcome == GameOutcome.draw;
+    final accent = switch (outcome) {
+      GameOutcome.playerWin => Colors.cyanAccent,
+      GameOutcome.botWin => Colors.pinkAccent,
+      GameOutcome.draw => Colors.white70,
+    };
+    final title = switch (outcome) {
+      GameOutcome.playerWin => 'STAGE CLEAR!',
+      GameOutcome.botWin => 'STAGE FAILED',
+      GameOutcome.draw => 'DRAW!',
+    };
     final hasNextStage =
         isPlayerWinner && gameState.currentStage < gameState.maxStage;
     final hasFinalReward =
@@ -109,7 +120,7 @@ class _ResultOverlay extends StatelessWidget {
                     child: Column(
                       children: [
                         Text(
-                          isPlayerWinner ? 'STAGE CLEAR!' : 'STAGE FAILED',
+                          title,
                           style: TextStyle(
                             color: accent,
                             fontSize: 24,
@@ -130,16 +141,20 @@ class _ResultOverlay extends StatelessWidget {
                           _Coupon(reward: gameState.currentReward),
                           const SizedBox(height: 24),
                         ] else if (!isPlayerWinner) ...[
-                          const Icon(
-                            Icons.sentiment_very_dissatisfied,
+                          Icon(
+                            isDraw
+                                ? Icons.balance
+                                : Icons.sentiment_very_dissatisfied,
                             size: 48,
-                            color: Colors.pinkAccent,
+                            color: accent,
                           ),
                           const SizedBox(height: 16),
-                          const Text(
-                            'Try again to reveal the product\nand unlock the reward.',
+                          Text(
+                            isDraw
+                                ? 'Equal score. Try this stage again.'
+                                : 'Try again to reveal the product\nand unlock the reward.',
                             textAlign: TextAlign.center,
-                            style: TextStyle(
+                            style: const TextStyle(
                               color: Colors.white38,
                               fontSize: 11,
                             ),
@@ -204,7 +219,9 @@ class _ResultHero extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: StatusBadge(
-                text: 'STAGE ${gameState.currentStage} REVEALED',
+                text: gameState.outcome == GameOutcome.playerWin
+                    ? 'STAGE ${gameState.currentStage} REVEALED'
+                    : 'STAGE ${gameState.currentStage} RESULT',
                 color: Colors.amberAccent,
               ),
             ),

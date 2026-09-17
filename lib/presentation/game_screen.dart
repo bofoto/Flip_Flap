@@ -513,7 +513,7 @@ class _Board extends StatelessWidget {
         if (gameState.status == GameStateStatus.finishing)
           _GameFinishOverlay(
             reason: gameState.endReason,
-            isPlayerWinner: gameState.gameResult.contains('PLAYER'),
+            outcome: gameState.outcome!,
           ),
       ],
     );
@@ -633,22 +633,31 @@ class _StageCountdownOverlay extends StatelessWidget {
 class _GameFinishOverlay extends StatelessWidget {
   const _GameFinishOverlay({
     required this.reason,
-    required this.isPlayerWinner,
+    required this.outcome,
   });
 
   final GameEndReason? reason;
-  final bool isPlayerWinner;
+  final GameOutcome outcome;
 
   @override
   Widget build(BuildContext context) {
     final isTimeExpired = reason == GameEndReason.timeExpired;
-    final accent = isPlayerWinner ? Colors.amberAccent : Colors.pinkAccent;
+    final isPlayerWinner = outcome == GameOutcome.playerWin;
+    final accent = switch (outcome) {
+      GameOutcome.playerWin => Colors.amberAccent,
+      GameOutcome.botWin => Colors.pinkAccent,
+      GameOutcome.draw => Colors.white70,
+    };
     final title = isTimeExpired
         ? 'TIME UP'
         : isPlayerWinner
             ? 'BOARD COMPLETE!'
             : 'BOARD TAKEN!';
-    final subtitle = isPlayerWinner ? 'YOU WIN' : 'BOT WINS';
+    final subtitle = switch (outcome) {
+      GameOutcome.playerWin => 'YOU WIN',
+      GameOutcome.botWin => 'BOT WINS',
+      GameOutcome.draw => 'DRAW!',
+    };
 
     return IgnorePointer(
       child: TweenAnimationBuilder<double>(
@@ -656,7 +665,9 @@ class _GameFinishOverlay extends StatelessWidget {
         duration: const Duration(milliseconds: 1200),
         curve: Curves.easeOut,
         builder: (context, progress, child) {
-          final flash = sin(progress * pi * 5).abs() * (1 - progress) * 0.7;
+          final flash = outcome == GameOutcome.draw
+              ? 0.0
+              : sin(progress * pi * 5).abs() * (1 - progress) * 0.7;
 
           return Stack(
             fit: StackFit.expand,
