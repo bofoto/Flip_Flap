@@ -17,6 +17,273 @@ void main() {
     addTearDown(() => HttpOverrides.global = previous);
   });
 
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600)
+  ]) {
+    testWidgets('full journey with retries at $viewport', (tester) async {
+      await tester.binding.setSurfaceSize(viewport);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final game = GameState();
+      addTearDown(game.dispose);
+      await tester.pumpWidget(ChangeNotifierProvider.value(
+        value: game,
+        child: const NeonFlipApp(),
+      ));
+      await tester.tap(find.text('STAGE 3'));
+      expect(game.currentStage, 1);
+      await tester.tap(find.text('START GAME'));
+
+      for (var stage = 1; stage <= 3; stage++) {
+        expect(game.currentStage, stage);
+        await _checkNewPlay(tester, game);
+
+        // Set the score only; result transitions and buttons use real app code.
+        for (final tile in game.board.expand((row) => row)) {
+          tile.owner = TileOwner.bot;
+          tile.type = TileType.normal;
+        }
+        game.endGame();
+        await _showResult(tester, game);
+        expect(find.text('STAGE FAILED'), findsOneWidget);
+        expect(find.text('NEXT CHALLENGE'), findsNothing);
+        expect(find.text('REWARD PASS'), findsNothing);
+        expect(game.unlockedStage, stage);
+        await _retryThroughButtons(tester, game, 'PLAY AGAIN');
+        expect(game.currentStage, stage);
+        await _checkNewPlay(tester, game);
+
+        // A fully owned odd-sized board cannot end with equal scores.
+        if (stage != 2) {
+          game.endGame();
+          await _showResult(tester, game);
+          expect(find.text('DRAW!'), findsOneWidget);
+          expect(find.text('REWARD PASS'), findsNothing);
+          await _retryThroughButtons(tester, game, 'PLAY AGAIN');
+          await _checkNewPlay(tester, game);
+        }
+
+        await _clearThroughLastCard(tester, game);
+        expect(find.text('STAGE CLEAR!'), findsOneWidget);
+        expect(game.unlockedStage, stage == 3 ? 3 : stage + 1);
+        expect(find.text('REWARD PASS'),
+            stage == 3 ? findsOneWidget : findsNothing);
+        final retryLabel = stage == 3 ? 'PLAY AGAIN' : 'RETRY STAGE';
+        await _retryThroughButtons(tester, game, retryLabel);
+        expect(game.currentStage, stage);
+        expect(game.unlockedStage, stage == 3 ? 3 : stage + 1);
+        await _checkNewPlay(tester, game);
+        await _clearThroughLastCard(tester, game);
+        if (stage < 3) {
+          await tester.ensureVisible(find.text('NEXT CHALLENGE'));
+          await tester.tap(find.text('NEXT CHALLENGE'));
+        } else {
+          expect(find.text('NEXT CHALLENGE'), findsNothing);
+        }
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('pause resume and reset buttons preserve or reset the same game',
+      (tester) async {
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.tap(find.text('START GAME'));
+    await _checkNewPlay(tester, game);
+    await tester.tap(find.byKey(const ValueKey('tile_0_1')));
+    await tester.pump(const Duration(milliseconds: 600));
+    final score = game.playerScore;
+    final session = game.sessionId;
+    await tester.tap(find.text('PAUSE'));
+    await tester.pump(const Duration(seconds: 5));
+    expect(game.playerScore, score);
+    expect(game.timeLeft, game.maxTime);
+    await tester.tap(find.text('RESUME'));
+    await tester.pump();
+    expect(game.status, GameStateStatus.playing);
+    expect(game.startCountdown, isNull);
+    expect(game.sessionId, session);
+    expect(game.playerScore, score);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(game.timeLeft, game.maxTime - 1);
+    await tester.tap(find.text('RESET'));
+    await tester.pump();
+    expect(game.status, GameStateStatus.ready);
+    await tester.tap(find.text('START GAME'));
+    await _checkNewPlay(tester, game);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'lifecycle pauses board and bot until the resume button is tapped',
+      (tester) async {
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.tap(find.text('START GAME'));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(milliseconds: 1100));
+    for (final state in [
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused
+    ]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    await tester.pump(const Duration(seconds: 20));
+    expect(game.timeLeft, game.maxTime - 1);
+    expect(game.playerScore, 8);
+    expect(find.text('PAUSED'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump(const Duration(seconds: 20));
+    expect(game.status, GameStateStatus.paused);
+    expect(game.playerScore, 8);
+    await tester.tap(find.text('RESUME'));
+    await tester.pump();
+    expect(find.text('PAUSED'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 701));
+    expect(game.botScore, greaterThan(8));
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('lifecycle cancels the visible countdown without auto restart',
+      (tester) async {
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.tap(find.text('START GAME'));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('2'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(seconds: 10));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(find.text('GET READY'), findsNothing);
+    expect(find.text('START GAME'), findsOneWidget);
+    expect(game.status, GameStateStatus.ready);
+    await tester.tap(find.text('START GAME'));
+    await tester.pump();
+    expect(find.text('3'), findsOneWidget);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('background during finish preserves the result on return',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(const Duration(seconds: 3));
+    game.endGame();
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(seconds: 5));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(game.status, GameStateStatus.ended);
+    expect(game.outcome, GameOutcome.draw);
+    expect(find.text('DRAW!'), findsOneWidget);
+    expect(find.text('RESUME'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('all next-stage buttons countdown and lock stage selection',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.tap(find.text('START GAME'));
+    for (var stage = 1; stage <= 3; stage++) {
+      await tester.pump();
+      expect(game.currentStage, stage);
+      expect(find.text('3'), findsOneWidget);
+      final start = tester.widget<ElevatedButton>(
+          find.widgetWithText(ElevatedButton, 'GET READY'));
+      expect(start.onPressed, isNull);
+      await tester.tap(find.text('STAGE 1').last);
+      expect(game.currentStage, stage);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('2'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('1'), findsOneWidget);
+      expect(game.playerScore, (game.totalTiles / 2).ceil());
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.status, GameStateStatus.playing);
+      expect(game.timeLeft, game.maxTime);
+      game.board[0][1].owner = TileOwner.player;
+      game.endGame();
+      await tester.pump();
+      await tester.tap(find.text('STAGE 1').last);
+      expect(game.status, GameStateStatus.finishing);
+      expect(game.currentStage, stage);
+      expect(find.text('RESET'), findsNothing);
+      final score = game.playerScore;
+      await tester.pump(const Duration(milliseconds: 1400));
+      expect(game.playerScore, score);
+      await tester.pump(const Duration(milliseconds: 500));
+      if (stage < 3) await tester.tap(find.text('NEXT CHALLENGE'));
+    }
+    expect(find.text('REWARD PASS'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('same-frame reset cancels bot and paused board rejects touches',
+      (tester) async {
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    game.startGame();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(seconds: 1));
+    game.pauseGame();
+    await tester.pump();
+    final score = game.playerScore;
+    await tester.tap(find.byKey(const ValueKey('tile_0_1')),
+        warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(game.playerScore, score);
+    game.startGame();
+    game.initializeGame();
+    game.startGame();
+    await tester.pump(const Duration(seconds: 3));
+    expect(game.playerScore, game.totalTiles ~/ 2);
+    await tester.pump(const Duration(milliseconds: 1100));
+    expect(game.playerScore, game.totalTiles ~/ 2);
+    expect(tester.takeException(), isNull);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   for (final stage in [1, 3]) {
     for (final outcome in GameOutcome.values) {
       testWidgets('stage $stage timeout shows $outcome through both screens',
@@ -28,11 +295,14 @@ void main() {
 
         while (game.currentStage < stage) {
           game.startGame();
+          await tester.pump(const Duration(seconds: 3));
           game.board[0][1].owner = TileOwner.player;
           game.endGame();
+          await tester.pump(const Duration(milliseconds: 1400));
           game.selectStage(game.currentStage + 1);
         }
         game.startGame();
+        await tester.pump(const Duration(seconds: 3));
         if (outcome == GameOutcome.playerWin) {
           game.board[0][1].owner = TileOwner.player;
         } else if (outcome == GameOutcome.botWin) {
@@ -110,6 +380,7 @@ void main() {
         (tester) async {
       final game = GameState()..startGame();
       addTearDown(game.dispose);
+      await tester.pump(const Duration(seconds: 3));
       for (final tile in game.board.expand((row) => row)) {
         tile.owner = owner;
       }
@@ -140,6 +411,62 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
   }
+}
+
+Future<void> _checkNewPlay(WidgetTester tester, GameState game) async {
+  for (final count in [3, 2, 1]) {
+    await tester.pump();
+    expect(game.status, GameStateStatus.starting);
+    expect(find.text('$count'), findsOneWidget);
+    expect(game.timeLeft, game.maxTime);
+    await tester.pump(const Duration(seconds: 1));
+  }
+  expect(game.status, GameStateStatus.playing);
+  expect(game.outcome, isNull);
+  expect(game.endReason, isNull);
+  expect(game.isPlayerFrozen, isFalse);
+  expect(game.isBotFrozen, isFalse);
+  expect(game.isRapidTapPenaltyActive, isFalse);
+  expect(game.timeLeft, game.maxTime);
+  for (final tile in game.board.expand((row) => row)) {
+    expect(tile.owner,
+        (tile.row + tile.col).isEven ? TileOwner.player : TileOwner.bot);
+    expect(tile.type, TileType.normal);
+  }
+  expect(tester.takeException(), isNull);
+}
+
+Future<void> _showResult(WidgetTester tester, GameState game) async {
+  await tester.pump(const Duration(milliseconds: 1399));
+  expect(game.status, GameStateStatus.finishing);
+  expect(find.text('PLAY AGAIN'), findsNothing);
+  await tester.pump(const Duration(milliseconds: 1));
+  expect(game.status, GameStateStatus.ended);
+  await tester.pump(const Duration(milliseconds: 500));
+  expect(tester.takeException(), isNull);
+}
+
+Future<void> _retryThroughButtons(
+    WidgetTester tester, GameState game, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pump();
+  expect(game.status, GameStateStatus.ready);
+  expect(game.outcome, isNull);
+  expect(find.text('REWARD PASS'), findsNothing);
+  expect(find.text('STAGE CLEAR!'), findsNothing);
+  await tester.tap(find.text('START GAME'));
+}
+
+Future<void> _clearThroughLastCard(WidgetTester tester, GameState game) async {
+  for (final tile in game.board.expand((row) => row)) {
+    tile.owner = TileOwner.player;
+    tile.type = TileType.normal;
+  }
+  game.board[0][1].owner = TileOwner.bot;
+  await tester.tap(find.byKey(const ValueKey('tile_0_1')));
+  expect(game.endReason, GameEndReason.boardCovered);
+  await _showResult(tester, game);
 }
 
 // Serve a local pixel for image requests so result tests never need the network.
