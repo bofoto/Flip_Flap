@@ -1,4 +1,4 @@
-# 🎮 NEON FLIP (광고판 뒤집기 대결 게임)
+# 🎮 FLIP FLAP (광고판 뒤집기 대결 게임)
 
 <div align="center">
 
@@ -17,7 +17,9 @@ https://app.notion.com/p/396ddebb56ca8009a682e38ed7e4ddfb?source=copy_link
 
 ## 📌 1. 프로젝트 개요 (Overview)
 
-**NEON FLIP**은 팝업스토어, 플래그십 스토어, 브랜드 행사장에서 대기 중인 고객들의 지루함을 해소하고, 자연스럽게 브랜드 제품을 홍보하기 위해 기획된 **마케팅 연계형 캐주얼 게임**입니다.
+**FLIP FLAP**은 팝업스토어, 플래그십 스토어, 브랜드 행사장에서 대기 중인 고객들의 지루함을 해소하고, 자연스럽게 브랜드 제품을 홍보하기 위해 기획된 **마케팅 연계형 캐주얼 게임**입니다.
+
+** 본작업은 바이브 코딩으로 진행하고 있습니다. **
 
 - **타겟 유저**: 팝업스토어 및 현장 이벤트 웨이팅 고객
 - **핵심 가치**: 
@@ -129,29 +131,8 @@ flutter test
 
 ---
 
-## 📱 6. 실행 방법 (Getting Started)
-
 ### 사전 요구 사항
 - Flutter SDK (>= 3.0.0)
 - Dart SDK (>= 3.0.0)
-
-### 실행 명령어
-
-```powershell
-# 의존성 설치
-flutter pub get
-
-# 코드 분석
-flutter analyze
-
-# 웹(Chrome) 브라우저 실행
-flutter run -d chrome
-
-# 안드로이드 스마트폰 / 태블릿 디바이스 실행
-flutter run -d android
-
-# 윈도우 데스크톱 실행
-flutter run -d windows
-```
 
 ---

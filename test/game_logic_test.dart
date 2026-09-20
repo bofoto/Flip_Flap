@@ -22,6 +22,19 @@ void main() {
       expect(gameState.selectStage(2), isFalse);
       expect(gameState.currentStage, 1);
     });
+
+    testWidgets('starts with a countdown before playing', (tester) async {
+      final gameState = GameState();
+      addTearDown(gameState.dispose);
+
+      gameState.startGame();
+
+      expect(gameState.startCountdown, 3);
+      expect(gameState.status, GameStateStatus.starting);
+      await tester.pump(const Duration(seconds: 3));
+      expect(gameState.status, GameStateStatus.playing);
+      gameState.initializeGame();
+    });
   });
 
   group('Tile flipping', () {
@@ -31,24 +44,38 @@ void main() {
       expect(gameState.flipTile(0, 1, TileOwner.player), isFalse);
     });
 
-    test('succeeds while the game is playing', () {
-      final gameState = GameState()..startGame();
+    testWidgets('succeeds while the game is playing', (tester) async {
+      final gameState = await _playingGame(tester);
 
       expect(gameState.board[0][1].owner, TileOwner.bot);
       expect(gameState.flipTile(0, 1, TileOwner.player), isTrue);
       expect(gameState.board[0][1].owner, TileOwner.player);
+      gameState.initializeGame();
+    });
+
+    testWidgets('freezes the player after three rapid taps', (tester) async {
+      final gameState = await _playingGame(tester);
+
+      expect(gameState.flipTile(0, 1, TileOwner.player), isTrue);
+      expect(gameState.flipTile(0, 3, TileOwner.player), isTrue);
+      expect(gameState.flipTile(1, 0, TileOwner.player), isFalse);
+      expect(gameState.isPlayerFrozen, isTrue);
+      expect(gameState.isRapidTapPenaltyActive, isTrue);
+      gameState.initializeGame();
     });
   });
 
   group('Special tiles', () {
-    test('bomb flips the surrounding 3x3 area', () {
-      final gameState = GameState()..startGame();
+    testWidgets('bomb flips the surrounding 3x3 area', (tester) async {
+      final gameState = await _playingGame(tester);
       _forceStageClear(gameState);
+      await tester.pump(const Duration(milliseconds: 1400));
 
       expect(gameState.unlockedStage, 2);
       gameState
         ..selectStage(2)
         ..startGame();
+      await tester.pump(const Duration(seconds: 3));
       gameState.board[2][2].type = TileType.bomb;
       gameState.flipTile(2, 2, TileOwner.player);
 
@@ -57,10 +84,11 @@ void main() {
           expect(gameState.board[row][col].owner, TileOwner.player);
         }
       }
+      gameState.initializeGame();
     });
 
-    test('line flips its full row and column', () {
-      final gameState = GameState()..startGame();
+    testWidgets('line flips its full row and column', (tester) async {
+      final gameState = await _playingGame(tester);
 
       gameState.board[2][2].type = TileType.line;
       gameState.flipTile(2, 2, TileOwner.player);
@@ -69,34 +97,40 @@ void main() {
         expect(gameState.board[2][i].owner, TileOwner.player);
         expect(gameState.board[i][2].owner, TileOwner.player);
       }
+      gameState.initializeGame();
     });
 
-    test('freeze disables the opponent temporarily', () {
-      final gameState = GameState()..startGame();
+    testWidgets('freeze disables the opponent temporarily', (tester) async {
+      final gameState = await _playingGame(tester);
 
       gameState.board[1][1].type = TileType.freeze;
       gameState.flipTile(1, 1, TileOwner.player);
 
       expect(gameState.isBotFrozen, isTrue);
       expect(gameState.isPlayerFrozen, isFalse);
+      gameState.initializeGame();
     });
   });
 
   group('Win condition and stages', () {
-    test('winning stage 1 unlocks stage 2', () {
-      final gameState = GameState()..startGame();
+    testWidgets('winning stage 1 unlocks stage 2', (tester) async {
+      final gameState = await _playingGame(tester);
 
       _forceStageClear(gameState);
 
-      expect(gameState.status, GameStateStatus.ended);
+      expect(gameState.status, GameStateStatus.finishing);
       expect(gameState.gameResult, contains('PLAYER WINS!'));
+      expect(gameState.endReason, GameEndReason.boardCovered);
       expect(gameState.unlockedStage, 2);
+      gameState.initializeGame();
     });
   });
 
   group('Campaign images', () {
-    test('returns the configured image for the selected stage', () {
+    testWidgets('returns the configured image for the selected stage',
+        (tester) async {
       final gameState = GameState();
+      addTearDown(gameState.dispose);
 
       expect(
         gameState.currentProductImage,
@@ -108,14 +142,26 @@ void main() {
       );
 
       gameState.startGame();
+      await tester.pump(const Duration(seconds: 3));
       _forceStageClear(gameState);
+      await tester.pump(const Duration(milliseconds: 1400));
       gameState.selectStage(2);
+
+      expect(gameState.boardSize, 5);
 
       expect(
         gameState.currentProductImage,
         contains('photo-1541643600914-78b084683601'),
       );
       expect(gameState.currentReward.code, 'POP-2026-GOODS');
+
+      gameState.startGame();
+      await tester.pump(const Duration(seconds: 3));
+      _forceStageClear(gameState);
+      await tester.pump(const Duration(milliseconds: 1400));
+      gameState.selectStage(3);
+
+      expect(gameState.boardSize, 6);
     });
 
     test('can swap campaign assets without changing game logic', () {
@@ -147,6 +193,13 @@ void main() {
       expect(gameState.currentReward.code, 'CLIENT-001');
     });
   });
+}
+
+Future<GameState> _playingGame(WidgetTester tester) async {
+  final game = GameState()..startGame();
+  addTearDown(game.dispose);
+  await tester.pump(const Duration(seconds: 3));
+  return game;
 }
 
 void _forceStageClear(GameState gameState) {

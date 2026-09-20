@@ -67,101 +67,125 @@ class _ResultOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPlayerWinner = gameState.gameResult.contains('PLAYER');
-    final accent = isPlayerWinner ? Colors.cyanAccent : Colors.pinkAccent;
+    final outcome = gameState.outcome!;
+    final isPlayerWinner = outcome == GameOutcome.playerWin;
+    final isDraw = outcome == GameOutcome.draw;
+    final accent = switch (outcome) {
+      GameOutcome.playerWin => Colors.cyanAccent,
+      GameOutcome.botWin => Colors.pinkAccent,
+      GameOutcome.draw => Colors.white70,
+    };
+    final title = switch (outcome) {
+      GameOutcome.playerWin => 'STAGE CLEAR!',
+      GameOutcome.botWin => 'STAGE FAILED',
+      GameOutcome.draw => 'DRAW!',
+    };
     final hasNextStage =
         isPlayerWinner && gameState.currentStage < gameState.maxStage;
+    final hasFinalReward =
+        isPlayerWinner && gameState.currentStage == gameState.maxStage;
 
     return Positioned.fill(
       child: Container(
         color: faded(Colors.black, 0.88),
-        child: Center(
-          child: TweenAnimationBuilder<double>(
-            tween: Tween<double>(begin: 0.8, end: 1),
-            duration: const Duration(milliseconds: 500),
-            curve: Curves.elasticOut,
-            builder: (context, scale, child) {
-              return Transform.scale(scale: scale, child: child);
-            },
-            child: Container(
-              width: 340,
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: accent, width: 3),
-                boxShadow: [
-                  BoxShadow(
-                    color: faded(accent, 0.3),
-                    blurRadius: 25,
-                    spreadRadius: 2,
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0.8, end: 1),
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.elasticOut,
+                builder: (context, scale, child) {
+                  return Transform.scale(scale: scale, child: child);
+                },
+                child: Container(
+                  width: 340,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: accent, width: 3),
+                    boxShadow: [
+                      BoxShadow(
+                        color: faded(accent, 0.3),
+                        blurRadius: 25,
+                        spreadRadius: 2,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _ResultHero(gameState: gameState),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                    child: Column(
-                      children: [
-                        Text(
-                          isPlayerWinner ? 'STAGE CLEAR!' : 'STAGE FAILED',
-                          style: TextStyle(
-                            color: accent,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 1.5,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Final Score: Player ${gameState.playerScore} vs Bot ${gameState.botScore}',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        if (isPlayerWinner) ...[
-                          _Coupon(reward: gameState.currentReward),
-                          const SizedBox(height: 24),
-                        ] else ...[
-                          const Icon(
-                            Icons.sentiment_very_dissatisfied,
-                            size: 48,
-                            color: Colors.pinkAccent,
-                          ),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Try again to reveal the product\nand unlock the reward.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 11,
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _ResultHero(gameState: gameState),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                        child: Column(
+                          children: [
+                            Text(
+                              title,
+                              style: TextStyle(
+                                color: accent,
+                                fontSize: 24,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 1.5,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 24),
-                        ],
-                        if (hasNextStage) ...[
-                          _PrimaryResultButton(
-                            text: 'NEXT CHALLENGE',
-                            onPressed: () {
-                              gameState.selectStage(gameState.currentStage + 1);
-                              gameState.startGame();
-                            },
-                          ),
-                          const SizedBox(height: 10),
-                        ],
-                        _SecondaryResultButton(
-                          text: hasNextStage ? 'RETRY STAGE' : 'PLAY AGAIN',
-                          onPressed: gameState.initializeGame,
+                            const SizedBox(height: 8),
+                            Text(
+                              'Final Score: Player ${gameState.playerScore} vs Bot ${gameState.botScore}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            if (hasFinalReward) ...[
+                              _Coupon(reward: gameState.currentReward),
+                              const SizedBox(height: 24),
+                            ] else if (!isPlayerWinner) ...[
+                              Icon(
+                                isDraw
+                                    ? Icons.balance
+                                    : Icons.sentiment_very_dissatisfied,
+                                size: 48,
+                                color: accent,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                isDraw
+                                    ? 'Equal score. Try this stage again.'
+                                    : 'Try again to reveal the product\nand unlock the reward.',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 11,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                            ],
+                            if (hasNextStage) ...[
+                              _PrimaryResultButton(
+                                text: 'NEXT CHALLENGE',
+                                onPressed: () {
+                                  if (gameState.selectStage(
+                                      gameState.currentStage + 1)) {
+                                    gameState.startGame();
+                                  }
+                                },
+                              ),
+                              const SizedBox(height: 10),
+                            ],
+                            _SecondaryResultButton(
+                              text: hasNextStage ? 'RETRY STAGE' : 'PLAY AGAIN',
+                              onPressed: gameState.initializeGame,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -202,7 +226,9 @@ class _ResultHero extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: StatusBadge(
-                text: 'STAGE ${gameState.currentStage} REVEALED',
+                text: gameState.outcome == GameOutcome.playerWin
+                    ? 'STAGE ${gameState.currentStage} REVEALED'
+                    : 'STAGE ${gameState.currentStage} RESULT',
                 color: Colors.amberAccent,
               ),
             ),
@@ -229,8 +255,11 @@ class _Coupon extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
             children: [
               const Text(
                 'REWARD PASS',

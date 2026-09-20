@@ -1,10 +1,13 @@
 import 'dart:math';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../domain/bot_ai.dart';
 import '../domain/game_state.dart';
+import 'freeze_effect.dart';
 
 Color faded(Color color, double opacity) {
   return color.withAlpha((opacity.clamp(0.0, 1.0) * 255).round());
@@ -17,11 +20,38 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   BotAI? _botAI;
+  GameState? _gameState;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _gameState?.setAppActive(state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final gameState = context.read<GameState>();
+    if (identical(_gameState, gameState)) return;
+    _gameState?.removeListener(_syncBot);
+    _botAI?.stop();
+    _botAI = null;
+    _gameState = gameState;
+    gameState.addListener(_syncBot);
+    _syncBot();
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _gameState?.removeListener(_syncBot);
     _botAI?.stop();
     super.dispose();
   }
@@ -30,34 +60,35 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     final gameState = context.watch<GameState>();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncBot(gameState);
-    });
-
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _Header(gameState: gameState),
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
               _ScoreGauge(gameState: gameState),
-              const SizedBox(height: 24),
+              const SizedBox(height: 8),
               _TimerAndStatus(gameState: gameState),
-              const SizedBox(height: 24),
+              const SizedBox(height: 8),
               Expanded(
                 child: Center(
                   child: AspectRatio(
                     aspectRatio: 1,
-                    child: _Board(gameState: gameState),
+                    child: _Board(
+                      gameState: gameState,
+                      countdown: gameState.startCountdown,
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
-              _ControlPanel(gameState: gameState),
+              const SizedBox(height: 12),
+              _ControlPanel(
+                gameState: gameState,
+              ),
             ],
           ),
         ),
@@ -65,7 +96,12 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  void _syncBot(GameState gameState) {
+  void _syncBot() {
+    final gameState = _gameState!;
+    if (gameState.status == GameStateStatus.paused) {
+      _botAI?.pause();
+      return;
+    }
     if (gameState.status != GameStateStatus.playing) {
       _botAI?.stop();
       return;
@@ -94,40 +130,41 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPlaying = gameState.status == GameStateStatus.playing;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  gameState.campaign.brandName.toUpperCase(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 2,
-                    shadows: [
-                      Shadow(color: Colors.cyanAccent, blurRadius: 10),
-                    ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    gameState.campaign.brandName.toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 26,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0,
+                      shadows: [
+                        Shadow(color: Colors.cyanAccent, blurRadius: 10),
+                      ],
+                    ),
                   ),
-                ),
-                Text(
-                  'SPEED TILE BATTLE',
-                  style: TextStyle(
-                    color: faded(Colors.white, 0.5),
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
+                  Text(
+                    'SPEED TILE BATTLE',
+                    style: TextStyle(
+                      color: faded(Colors.white, 0.5),
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            const SizedBox(width: 8),
             StatusBadge(
               text: 'STAGE ${gameState.currentStage}',
               color: Colors.amberAccent,
@@ -151,7 +188,7 @@ class _Header extends StatelessWidget {
                   stage: stage,
                   isSelected: isSelected,
                   isUnlocked: isUnlocked,
-                  onTap: isPlaying || !isUnlocked
+                  onTap: !gameState.canSelectStage || !isUnlocked
                       ? null
                       : () => gameState.selectStage(stage),
                 ),
@@ -188,7 +225,8 @@ class _StageButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        height: 48,
+        padding: const EdgeInsets.symmetric(vertical: 4),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF1E293B) : const Color(0xFF0F172A),
           borderRadius: BorderRadius.circular(8),
@@ -205,22 +243,28 @@ class _StageButton extends StatelessWidget {
                 ]
               : null,
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (!isUnlocked) ...[
-              const Icon(Icons.lock, color: Colors.white24, size: 14),
-              const SizedBox(width: 4),
-            ],
-            Text(
-              'STAGE $stage',
-              style: TextStyle(
-                color: labelColor,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+        child: SizedBox(
+          height: 36,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (!isUnlocked) ...[
+                const Icon(Icons.lock, color: Colors.white24, size: 14),
+                const SizedBox(width: 4),
+              ],
+              Flexible(
+                child: Text(
+                  'STAGE $stage',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: labelColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -321,7 +365,7 @@ class _ScoreLabel extends StatelessWidget {
       style: TextStyle(
         color: color,
         fontWeight: FontWeight.bold,
-        fontSize: 16,
+        fontSize: 14,
       ),
     );
 
@@ -341,42 +385,77 @@ class _TimerAndStatus extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLowTime = gameState.timeLeft <= 5;
+    final isPaused = gameState.status == GameStateStatus.paused;
+    final color = isPaused
+        ? Colors.white54
+        : isLowTime
+            ? Colors.redAccent
+            : Colors.amberAccent;
+    final remaining = gameState.maxTime > 0
+        ? (gameState.timeLeft / gameState.maxTime).clamp(0.0, 1.0)
+        : 0.0;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Column(
       children: [
         Row(
           children: [
-            Icon(
-              Icons.timer,
-              color: isLowTime ? Colors.redAccent : Colors.cyanAccent,
-              size: 24,
+            SizedBox(
+              width: 100,
+              child: Row(
+                children: [
+                  Icon(Icons.timer, color: color, size: 24),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${gameState.timeLeft}s',
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(width: 8),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 200),
-              style: TextStyle(
-                color: isLowTime ? Colors.redAccent : Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                shadows: isLowTime
-                    ? [const Shadow(color: Colors.redAccent, blurRadius: 10)]
-                    : null,
+            Expanded(
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  if (gameState.isRapidTapPenaltyActive)
+                    const StatusBadge(
+                      text: 'TOO FAST: 1s',
+                      color: Colors.redAccent,
+                    )
+                  else if (gameState.isPlayerFrozen)
+                    FreezeStatus(
+                      key: const ValueKey('player_freeze_status'),
+                      gameState: gameState,
+                      target: TileOwner.player,
+                    ),
+                  if (gameState.isBotFrozen)
+                    FreezeStatus(
+                      key: const ValueKey('bot_freeze_status'),
+                      gameState: gameState,
+                      target: TileOwner.bot,
+                    ),
+                ],
               ),
-              child: Text('${gameState.timeLeft}s'),
             ),
           ],
         ),
-        Row(
-          children: [
-            if (gameState.isPlayerFrozen)
-              const StatusBadge(text: 'YOU FROZEN!', color: Colors.blueAccent),
-            if (gameState.isPlayerFrozen && gameState.isBotFrozen)
-              const SizedBox(width: 8),
-            if (gameState.isBotFrozen)
-              const StatusBadge(
-                  text: 'BOT FROZEN!', color: Colors.orangeAccent),
-          ],
+        const SizedBox(height: 4),
+        LinearProgressIndicator(
+          key: const ValueKey('remaining_time_bar'),
+          value: remaining,
+          minHeight: 6,
+          color: color,
+          backgroundColor: Colors.white12,
+          borderRadius: BorderRadius.circular(3),
+          semanticsLabel:
+              'Remaining time: ${gameState.timeLeft} of ${gameState.maxTime} seconds',
         ),
       ],
     );
@@ -416,55 +495,112 @@ class StatusBadge extends StatelessWidget {
 }
 
 class _Board extends StatelessWidget {
-  const _Board({required this.gameState});
+  const _Board({
+    required this.gameState,
+    required this.countdown,
+  });
 
   final GameState gameState;
+  final int? countdown;
 
   @override
   Widget build(BuildContext context) {
     final size = gameState.boardSize;
 
-    return GridView.builder(
-      key: ValueKey('board_grid_${gameState.currentStage}'),
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: size,
-        crossAxisSpacing: 6,
-        mainAxisSpacing: 6,
-      ),
-      itemCount: size * size,
-      itemBuilder: (context, index) {
-        final row = index ~/ size;
-        final col = index % size;
-        final tile = gameState.board[row][col];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        AbsorbPointer(
+          absorbing: gameState.status != GameStateStatus.playing ||
+              gameState.isPlayerFrozen,
+          child: GridView.builder(
+            key: ValueKey('board_grid_${gameState.currentStage}'),
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: size,
+              crossAxisSpacing: 5,
+              mainAxisSpacing: 5,
+            ),
+            itemCount: size * size,
+            itemBuilder: (context, index) {
+              final row = index ~/ size;
+              final col = index % size;
+              final tile = gameState.board[row][col];
 
-        return FlipTileWidget(
-          key: ValueKey('tile_${row}_$col'),
-          tile: tile,
-          boardSize: size,
-          productImageUrl: gameState.currentProductImage,
-          backImageUrl: gameState.brandLogoImage,
-          onTap: () => gameState.flipTile(row, col, TileOwner.player),
-        );
-      },
+              return FlipTileWidget(
+                key: ValueKey('tile_${row}_$col'),
+                tile: tile,
+                boardSize: size,
+                productImageUrl: gameState.currentProductImage,
+                backImageUrl: gameState.brandLogoImage,
+                onTap: () {
+                  if (gameState.flipTile(row, col, TileOwner.player)) {
+                    HapticFeedback.selectionClick();
+                  }
+                },
+              );
+            },
+          ),
+        ),
+        if (gameState.isPlayerFrozen && !gameState.isRapidTapPenaltyActive)
+          const PlayerFrostOverlay(key: ValueKey('player_frost_overlay')),
+        if (countdown != null)
+          _StageCountdownOverlay(
+            imageUrl: gameState.currentProductImage,
+            countdown: countdown!,
+          ),
+        if (gameState.status == GameStateStatus.finishing)
+          _GameFinishOverlay(
+            reason: gameState.endReason,
+            outcome: gameState.outcome!,
+          ),
+        if (gameState.status == GameStateStatus.paused)
+          const ColoredBox(
+            color: Color(0x99000000),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.pause_circle_outline,
+                      color: Colors.white, size: 48),
+                  SizedBox(height: 8),
+                  Text('PAUSED',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      )),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
 
 class _ControlPanel extends StatelessWidget {
-  const _ControlPanel({required this.gameState});
+  const _ControlPanel({
+    required this.gameState,
+  });
 
   final GameState gameState;
 
   @override
   Widget build(BuildContext context) {
     if (gameState.status == GameStateStatus.ready ||
-        gameState.status == GameStateStatus.ended) {
+        gameState.status == GameStateStatus.ended ||
+        gameState.status == GameStateStatus.starting) {
+      final isStartingStage = gameState.status == GameStateStatus.starting;
       return NeonButton(
-        text: 'START GAME',
+        text: isStartingStage ? 'GET READY' : 'START GAME',
         color: Colors.cyanAccent,
-        onPressed: gameState.startGame,
+        onPressed: isStartingStage ? null : gameState.startGame,
       );
+    }
+
+    if (gameState.status == GameStateStatus.finishing) {
+      return const SizedBox(height: 52);
     }
 
     return Row(
@@ -493,6 +629,149 @@ class _ControlPanel extends StatelessWidget {
   }
 }
 
+class _StageCountdownOverlay extends StatelessWidget {
+  const _StageCountdownOverlay({
+    required this.imageUrl,
+    required this.countdown,
+  });
+
+  final String imageUrl;
+  final int countdown;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.network(imageUrl, fit: BoxFit.cover),
+        ColoredBox(color: faded(const Color(0xFF0F172A), 0.35)),
+        Positioned.fill(
+          child: TweenAnimationBuilder<double>(
+            key: ValueKey(countdown),
+            tween: Tween(begin: 1, end: 0.78),
+            duration: const Duration(milliseconds: 950),
+            curve: Curves.easeOut,
+            builder: (context, scale, child) {
+              return Center(
+                child: FractionallySizedBox(
+                  widthFactor: scale,
+                  heightFactor: scale,
+                  child: child,
+                ),
+              );
+            },
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.cyanAccent, width: 4),
+              ),
+            ),
+          ),
+        ),
+        Center(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: Text(
+              '$countdown',
+              key: ValueKey(countdown),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 88,
+                fontWeight: FontWeight.w900,
+                shadows: [Shadow(color: Colors.cyanAccent, blurRadius: 16)],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _GameFinishOverlay extends StatelessWidget {
+  const _GameFinishOverlay({
+    required this.reason,
+    required this.outcome,
+  });
+
+  final GameEndReason? reason;
+  final GameOutcome outcome;
+
+  @override
+  Widget build(BuildContext context) {
+    final isTimeExpired = reason == GameEndReason.timeExpired;
+    final isPlayerWinner = outcome == GameOutcome.playerWin;
+    final accent = switch (outcome) {
+      GameOutcome.playerWin => Colors.amberAccent,
+      GameOutcome.botWin => Colors.pinkAccent,
+      GameOutcome.draw => Colors.white70,
+    };
+    final title = isTimeExpired
+        ? 'TIME UP'
+        : isPlayerWinner
+            ? 'BOARD COMPLETE!'
+            : 'BOARD TAKEN!';
+    final subtitle = switch (outcome) {
+      GameOutcome.playerWin => 'YOU WIN',
+      GameOutcome.botWin => 'BOT WINS',
+      GameOutcome.draw => 'DRAW!',
+    };
+
+    return IgnorePointer(
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 1200),
+        curve: Curves.easeOut,
+        builder: (context, progress, child) {
+          final flash = outcome == GameOutcome.draw
+              ? 0.0
+              : sin(progress * pi * 5).abs() * (1 - progress) * 0.7;
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(color: faded(accent, flash)),
+              ColoredBox(color: faded(Colors.black, 0.25 + progress * 0.2)),
+              Center(
+                child: Opacity(
+                  opacity: min(1, progress * 2),
+                  child: Transform.scale(
+                    scale: 0.82 + min(0.18, progress * 0.18),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w900,
+                            shadows: [Shadow(color: accent, blurRadius: 18)],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
 class NeonButton extends StatelessWidget {
   const NeonButton({
     super.key,
@@ -503,7 +782,7 @@ class NeonButton extends StatelessWidget {
 
   final String text;
   final Color color;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -530,7 +809,7 @@ class NeonButton extends StatelessWidget {
   }
 }
 
-class FlipTileWidget extends StatelessWidget {
+class FlipTileWidget extends StatefulWidget {
   const FlipTileWidget({
     super.key,
     required this.tile,
@@ -547,54 +826,69 @@ class FlipTileWidget extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<FlipTileWidget> createState() => _FlipTileWidgetState();
+}
+
+class _FlipTileWidgetState extends State<FlipTileWidget> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    final isPlayerTile = tile.owner == TileOwner.player;
+    final isPlayerTile = widget.tile.owner == TileOwner.player;
     final itemIcon = _itemIcon;
 
     return GestureDetector(
-      onTap: onTap,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween<double>(begin: 0, end: isPlayerTile ? 0 : pi),
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeOutBack,
-        builder: (context, angle, child) {
-          final isFront = angle < pi / 2;
-          final transform = Matrix4.identity()
-            ..setEntry(3, 2, 0.002)
-            ..rotateY(angle);
+      onTap: widget.onTap,
+      onTapDown: (_) => setState(() => _isPressed = true),
+      onTapUp: (_) => setState(() => _isPressed = false),
+      onTapCancel: () => setState(() => _isPressed = false),
+      child: AnimatedScale(
+        scale: _isPressed ? 0.92 : 1,
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: isPlayerTile ? 0 : pi),
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutBack,
+          builder: (context, angle, child) {
+            final isFront = angle < pi / 2;
+            final transform = Matrix4.identity()
+              ..setEntry(3, 2, 0.002)
+              ..rotateY(angle);
 
-          return Transform(
-            transform: transform,
-            alignment: Alignment.center,
-            child: isFront
-                ? _TileFace(
-                    borderColor: Colors.cyan,
-                    shadowColor: Colors.cyanAccent,
-                    icon: itemIcon,
-                    child: _ProductImagePiece(
-                      tile: tile,
-                      boardSize: boardSize,
-                      imageUrl: productImageUrl,
-                    ),
-                  )
-                : Transform(
-                    transform: Matrix4.identity()..rotateY(pi),
-                    alignment: Alignment.center,
-                    child: _TileFace(
-                      borderColor: Colors.pink,
-                      shadowColor: Colors.pinkAccent,
+            return Transform(
+              transform: transform,
+              alignment: Alignment.center,
+              child: isFront
+                  ? _TileFace(
+                      borderColor: Colors.cyan,
+                      shadowColor: Colors.cyanAccent,
                       icon: itemIcon,
-                      child: _BackImage(imageUrl: backImageUrl),
+                      child: _ProductImagePiece(
+                        tile: widget.tile,
+                        boardSize: widget.boardSize,
+                        imageUrl: widget.productImageUrl,
+                      ),
+                    )
+                  : Transform(
+                      transform: Matrix4.identity()..rotateY(pi),
+                      alignment: Alignment.center,
+                      child: _TileFace(
+                        borderColor: Colors.pink,
+                        shadowColor: Colors.pinkAccent,
+                        icon: itemIcon,
+                        child: _BackImage(imageUrl: widget.backImageUrl),
+                      ),
                     ),
-                  ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
   Widget? get _itemIcon {
-    return switch (tile.type) {
+    return switch (widget.tile.type) {
       TileType.bomb =>
         const Icon(Icons.brightness_7, color: Colors.white, size: 24),
       TileType.line =>
@@ -636,8 +930,28 @@ class _TileFace extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          child,
-          if (icon != null) Center(child: icon),
+          if (icon == null)
+            child
+          else ...[
+            ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 2.5, sigmaY: 2.5),
+              child: child,
+            ),
+            ColoredBox(color: faded(Colors.black, 0.3)),
+            Center(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: faded(Colors.black, 0.45),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: icon,
+                ),
+              ),
+            ),
+          ],
           IgnorePointer(
             child: DecoratedBox(
               decoration: BoxDecoration(

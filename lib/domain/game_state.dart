@@ -1,15 +1,21 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
 import 'campaign_config.dart';
+import 'pausable_timer.dart';
 
 enum TileOwner { player, bot, none }
 
 enum TileType { normal, bomb, line, freeze }
 
-enum GameStateStatus { ready, playing, paused, ended }
+enum GameStateStatus { ready, starting, playing, paused, finishing, ended }
+
+enum GameEndReason { timeExpired, boardCovered }
+
+enum GameOutcome { playerWin, botWin, draw }
 
 class BoardTile {
   BoardTile({
@@ -26,7 +32,12 @@ class BoardTile {
 }
 
 class GameState extends ChangeNotifier {
+  static const freezeDuration = Duration(seconds: 2);
   static const double _specialTileSpawnRate = 0.12;
+  static const Duration _rapidTapWindow = Duration(milliseconds: 350);
+  static const int _rapidTapLimit = 3;
+  static const Duration _rapidTapPenaltyDuration = Duration(seconds: 1);
+  static const Duration _resultDelay = Duration(milliseconds: 1400);
 
   GameState({
     this.campaign = defaultCampaignConfig,
@@ -42,13 +53,22 @@ class GameState extends ChangeNotifier {
   List<List<BoardTile>> _board = [];
   int _timeLeft = 30;
   GameStateStatus _status = GameStateStatus.ready;
-  Timer? _timer;
+  final _timer = PausableTimer();
+  Timer? _resultTimer;
+  Timer? _startTimer;
+  int? _startCountdown;
+  int _sessionId = 0;
 
   bool _isPlayerFrozen = false;
   bool _isBotFrozen = false;
-  Timer? _playerFreezeTimer;
-  Timer? _botFreezeTimer;
-  String _gameResult = '';
+  bool _isRapidTapPenaltyActive = false;
+  final _playerFreezeTimer = PausableTimer();
+  final _botFreezeTimer = PausableTimer();
+  bool _isAppActive = true;
+  DateTime? _lastPlayerTapAt;
+  int _rapidTapCount = 0;
+  GameOutcome? _outcome;
+  GameEndReason? _endReason;
 
   int get currentStage => _currentStage;
   int get unlockedStage => _unlockedStage;
@@ -58,7 +78,34 @@ class GameState extends ChangeNotifier {
   GameStateStatus get status => _status;
   bool get isPlayerFrozen => _isPlayerFrozen;
   bool get isBotFrozen => _isBotFrozen;
-  String get gameResult => _gameResult;
+  bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
+  Duration get playerFreezeRemaining =>
+      _isPlayerFrozen && !_isRapidTapPenaltyActive
+          ? _playerFreezeTimer.remaining
+          : Duration.zero;
+  Duration get botFreezeRemaining =>
+      _isBotFrozen ? _botFreezeTimer.remaining : Duration.zero;
+  int? get startCountdown => _startCountdown;
+  int get sessionId => _sessionId;
+  bool get canSelectStage =>
+      _isAppActive &&
+      (_status == GameStateStatus.ready ||
+          _status == GameStateStatus.paused ||
+          _status == GameStateStatus.ended);
+  GameOutcome? get outcome => _outcome;
+  String get gameResult {
+    final label = switch (_outcome) {
+      GameOutcome.playerWin => 'PLAYER WINS!',
+      GameOutcome.botWin => 'BOT WINS!',
+      GameOutcome.draw => 'DRAW!',
+      null => '',
+    };
+    return _endReason == GameEndReason.boardCovered
+        ? '$label\n(ALL COVERED!)'
+        : label;
+  }
+
+  GameEndReason? get endReason => _endReason;
   String get brandLogoImage => campaign.backImageUrl;
   int get boardSize => _stageConfig.boardSize;
   int get maxTime => _stageConfig.maxTime;
@@ -72,7 +119,10 @@ class GameState extends ChangeNotifier {
   int get botScore => _countTiles(TileOwner.bot);
 
   bool selectStage(int stage) {
-    if (stage < 1 || stage > maxStage || stage > _unlockedStage) {
+    if (!canSelectStage ||
+        stage < 1 ||
+        stage > maxStage ||
+        stage > _unlockedStage) {
       return false;
     }
 
@@ -82,14 +132,22 @@ class GameState extends ChangeNotifier {
   }
 
   void initializeGame() {
+    _sessionId++;
+    _startTimer?.cancel();
+    _startCountdown = null;
     _status = GameStateStatus.ready;
     _timeLeft = maxTime;
-    _gameResult = '';
+    _outcome = null;
+    _endReason = null;
     _isPlayerFrozen = false;
     _isBotFrozen = false;
-    _timer?.cancel();
-    _playerFreezeTimer?.cancel();
-    _botFreezeTimer?.cancel();
+    _isRapidTapPenaltyActive = false;
+    _lastPlayerTapAt = null;
+    _rapidTapCount = 0;
+    _timer.cancel();
+    _resultTimer?.cancel();
+    _playerFreezeTimer.cancel();
+    _botFreezeTimer.cancel();
 
     _board = List.generate(boardSize, (row) {
       return List.generate(boardSize, (col) {
@@ -102,14 +160,45 @@ class GameState extends ChangeNotifier {
   }
 
   void startGame() {
-    if (_status == GameStateStatus.ready || _status == GameStateStatus.ended) {
-      initializeGame();
-    } else if (_status != GameStateStatus.paused) {
+    if (!_isAppActive) return;
+    if (_status == GameStateStatus.paused) {
+      _beginPlaying();
+      return;
+    }
+    if (_status != GameStateStatus.ready && _status != GameStateStatus.ended) {
       return;
     }
 
+    initializeGame();
+    _status = GameStateStatus.starting;
+    _startCountdown = 3;
+    final session = _sessionId;
+    _startTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (session != _sessionId || _status != GameStateStatus.starting) {
+        timer.cancel();
+        return;
+      }
+      if (_startCountdown == 1) {
+        timer.cancel();
+        _startCountdown = null;
+        _beginPlaying();
+      } else {
+        _startCountdown = _startCountdown! - 1;
+        notifyListeners();
+      }
+    });
+    notifyListeners();
+  }
+
+  void _beginPlaying() {
     _status = GameStateStatus.playing;
-    _startCountdown();
+    if (_timer.isPending) {
+      _timer.resume();
+    } else {
+      _startGameTimer();
+    }
+    _playerFreezeTimer.resume();
+    _botFreezeTimer.resume();
     notifyListeners();
   }
 
@@ -117,13 +206,33 @@ class GameState extends ChangeNotifier {
     if (_status != GameStateStatus.playing) return;
 
     _status = GameStateStatus.paused;
-    _timer?.cancel();
+    _timer.pause();
+    _playerFreezeTimer.pause();
+    _botFreezeTimer.pause();
+    _lastPlayerTapAt = null;
+    _rapidTapCount = 0;
     notifyListeners();
+  }
+
+  void setAppActive(bool active) {
+    if (_isAppActive == active) return;
+    _isAppActive = active;
+    if (!active && _status == GameStateStatus.starting) {
+      initializeGame();
+    } else if (!active && _status == GameStateStatus.playing) {
+      pauseGame();
+    } else {
+      notifyListeners();
+    }
   }
 
   bool flipTile(int row, int col, TileOwner owner) {
     if (_status != GameStateStatus.playing) return false;
-    if (owner == TileOwner.player && _isPlayerFrozen) return false;
+    if (!_isInBounds(row, col) || owner == TileOwner.none) return false;
+    if (owner == TileOwner.player) {
+      if (_isPlayerFrozen) return false;
+      if (_registerPlayerTap()) return false;
+    }
     if (owner == TileOwner.bot && _isBotFrozen) return false;
 
     final tile = _board[row][col];
@@ -151,38 +260,43 @@ class GameState extends ChangeNotifier {
       _spawnSpecialTile();
     }
 
-    notifyListeners();
     _checkBoardCoveredWin();
+    if (_status == GameStateStatus.playing) notifyListeners();
     return true;
   }
 
   void endGame() {
-    _timer?.cancel();
-    _status = GameStateStatus.ended;
-
+    if (_status != GameStateStatus.playing) return;
     if (playerScore > botScore) {
-      _gameResult = 'PLAYER WINS!';
-      _unlockNextStage();
+      _finishGame(
+        winner: TileOwner.player,
+        reason: GameEndReason.timeExpired,
+      );
     } else if (botScore > playerScore) {
-      _gameResult = 'BOT WINS!';
+      _finishGame(winner: TileOwner.bot, reason: GameEndReason.timeExpired);
     } else {
-      _gameResult = 'DRAW!';
+      _finishGame(reason: GameEndReason.timeExpired);
     }
-
-    notifyListeners();
   }
 
-  void _startCountdown() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_timeLeft <= 0) {
+  void _startGameTimer() {
+    final session = _sessionId;
+    _timer.start(const Duration(seconds: 1), () {
+      if (session != _sessionId || _status != GameStateStatus.playing) {
+        return;
+      }
+      if (_timeLeft <= 1) {
+        _timeLeft = 0;
         endGame();
         return;
       }
 
       _timeLeft--;
-      notifyListeners();
       _checkBoardCoveredWin();
+      if (session == _sessionId && _status == GameStateStatus.playing) {
+        _startGameTimer();
+        notifyListeners();
+      }
     });
   }
 
@@ -213,8 +327,7 @@ class GameState extends ChangeNotifier {
   void _applyFreezeEffect(TileOwner attacker) {
     if (attacker == TileOwner.player) {
       _isBotFrozen = true;
-      _botFreezeTimer?.cancel();
-      _botFreezeTimer = Timer(const Duration(seconds: 2), () {
+      _botFreezeTimer.start(freezeDuration, () {
         _isBotFrozen = false;
         notifyListeners();
       });
@@ -222,11 +335,36 @@ class GameState extends ChangeNotifier {
     }
 
     _isPlayerFrozen = true;
-    _playerFreezeTimer?.cancel();
-    _playerFreezeTimer = Timer(const Duration(seconds: 2), () {
+    _isRapidTapPenaltyActive = false;
+    _playerFreezeTimer.start(freezeDuration, () {
       _isPlayerFrozen = false;
       notifyListeners();
     });
+  }
+
+  bool _registerPlayerTap() {
+    final now = clock.now();
+    final previousTap = _lastPlayerTapAt;
+    _lastPlayerTapAt = now;
+
+    if (previousTap == null || now.difference(previousTap) > _rapidTapWindow) {
+      _rapidTapCount = 1;
+      return false;
+    }
+
+    _rapidTapCount++;
+    if (_rapidTapCount < _rapidTapLimit) return false;
+
+    _rapidTapCount = 0;
+    _isPlayerFrozen = true;
+    _isRapidTapPenaltyActive = true;
+    _playerFreezeTimer.start(_rapidTapPenaltyDuration, () {
+      _isPlayerFrozen = false;
+      _isRapidTapPenaltyActive = false;
+      notifyListeners();
+    });
+    notifyListeners();
+    return true;
   }
 
   void _spawnSpecialTile() {
@@ -244,23 +382,42 @@ class GameState extends ChangeNotifier {
 
   void _checkBoardCoveredWin() {
     if (playerScore == totalTiles) {
-      _endGameWithWinner(TileOwner.player, 'ALL COVERED!');
+      _finishGame(winner: TileOwner.player, reason: GameEndReason.boardCovered);
     } else if (botScore == totalTiles) {
-      _endGameWithWinner(TileOwner.bot, 'ALL COVERED!');
+      _finishGame(winner: TileOwner.bot, reason: GameEndReason.boardCovered);
     }
   }
 
-  void _endGameWithWinner(TileOwner winner, String suffix) {
-    _timer?.cancel();
-    _status = GameStateStatus.ended;
+  void _finishGame({
+    TileOwner? winner,
+    required GameEndReason reason,
+  }) {
+    if (_status != GameStateStatus.playing) return;
+    _timer.cancel();
+    _resultTimer?.cancel();
+    _playerFreezeTimer.cancel();
+    _botFreezeTimer.cancel();
+    _isPlayerFrozen = false;
+    _isBotFrozen = false;
+    _isRapidTapPenaltyActive = false;
+    _status = GameStateStatus.finishing;
+    _endReason = reason;
 
     if (winner == TileOwner.player) {
-      _gameResult = 'PLAYER WINS!\n($suffix)';
+      _outcome = GameOutcome.playerWin;
       _unlockNextStage();
+    } else if (winner == TileOwner.bot) {
+      _outcome = GameOutcome.botWin;
     } else {
-      _gameResult = 'BOT WINS!\n($suffix)';
+      _outcome = GameOutcome.draw;
     }
 
+    final session = _sessionId;
+    _resultTimer = Timer(_resultDelay, () {
+      if (session != _sessionId || _status != GameStateStatus.finishing) return;
+      _status = GameStateStatus.ended;
+      notifyListeners();
+    });
     notifyListeners();
   }
 
@@ -276,9 +433,12 @@ class GameState extends ChangeNotifier {
 
   @override
   void dispose() {
-    _timer?.cancel();
-    _playerFreezeTimer?.cancel();
-    _botFreezeTimer?.cancel();
+    _sessionId++;
+    _startTimer?.cancel();
+    _timer.cancel();
+    _resultTimer?.cancel();
+    _playerFreezeTimer.cancel();
+    _botFreezeTimer.cancel();
     super.dispose();
   }
 }

@@ -1,7 +1,7 @@
-import 'dart:async';
 import 'dart:math';
 
 import 'game_state.dart';
+import 'pausable_timer.dart';
 
 enum BotDifficulty { easy, medium, hard }
 
@@ -15,21 +15,41 @@ class BotAI {
   final BotDifficulty difficulty;
   final Random _random = Random();
 
-  Timer? _loopTimer;
+  final _loopTimer = PausableTimer();
+  int? _pausedSession;
   bool _isRunning = false;
+  int _runId = 0;
 
   bool get isRunning => _isRunning;
 
   void start() {
-    if (_isRunning) return;
+    if (_isRunning || gameState.status != GameStateStatus.playing) return;
 
+    if (_loopTimer.isPending && _pausedSession == gameState.sessionId) {
+      _isRunning = true;
+      _pausedSession = null;
+      _loopTimer.resume();
+      return;
+    }
+    _loopTimer.cancel();
+    _pausedSession = null;
+    _runId++;
     _isRunning = true;
     _scheduleNextAction();
   }
 
   void stop() {
+    _runId++;
     _isRunning = false;
-    _loopTimer?.cancel();
+    _loopTimer.cancel();
+    _pausedSession = null;
+  }
+
+  void pause() {
+    if (!_isRunning) return;
+    _isRunning = false;
+    _pausedSession = gameState.sessionId;
+    _loopTimer.pause();
   }
 
   void _scheduleNextAction() {
@@ -38,9 +58,16 @@ class BotAI {
       return;
     }
 
-    _loopTimer = Timer(_nextDelay, () {
+    final run = _runId;
+    final session = gameState.sessionId;
+    _loopTimer.start(_nextDelay, () {
+      if (!_isRunning || run != _runId) return;
+      if (session != gameState.sessionId) {
+        stop();
+        return;
+      }
       _performAction();
-      _scheduleNextAction();
+      if (_isRunning && run == _runId) _scheduleNextAction();
     });
   }
 
