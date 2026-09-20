@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../domain/bot_ai.dart';
 import '../domain/game_state.dart';
+import 'freeze_effect.dart';
 
 Color faded(Color color, double opacity) {
   return color.withAlpha((opacity.clamp(0.0, 1.0) * 255).round());
@@ -70,9 +71,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
               _Header(gameState: gameState),
               const SizedBox(height: 12),
               _ScoreGauge(gameState: gameState),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               _TimerAndStatus(gameState: gameState),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               Expanded(
                 child: Center(
                   child: AspectRatio(
@@ -384,49 +385,77 @@ class _TimerAndStatus extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLowTime = gameState.timeLeft <= 5;
+    final isPaused = gameState.status == GameStateStatus.paused;
+    final color = isPaused
+        ? Colors.white54
+        : isLowTime
+            ? Colors.redAccent
+            : Colors.amberAccent;
+    final remaining = gameState.maxTime > 0
+        ? (gameState.timeLeft / gameState.maxTime).clamp(0.0, 1.0)
+        : 0.0;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Column(
       children: [
         Row(
           children: [
-            Icon(
-              Icons.timer,
-              color: isLowTime ? Colors.redAccent : Colors.cyanAccent,
-              size: 24,
+            SizedBox(
+              width: 100,
+              child: Row(
+                children: [
+                  Icon(Icons.timer, color: color, size: 24),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${gameState.timeLeft}s',
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(width: 8),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 200),
-              style: TextStyle(
-                color: isLowTime ? Colors.redAccent : Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                shadows: isLowTime
-                    ? [const Shadow(color: Colors.redAccent, blurRadius: 10)]
-                    : null,
+            Expanded(
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  if (gameState.isRapidTapPenaltyActive)
+                    const StatusBadge(
+                      text: 'TOO FAST: 1s',
+                      color: Colors.redAccent,
+                    )
+                  else if (gameState.isPlayerFrozen)
+                    FreezeStatus(
+                      key: const ValueKey('player_freeze_status'),
+                      gameState: gameState,
+                      target: TileOwner.player,
+                    ),
+                  if (gameState.isBotFrozen)
+                    FreezeStatus(
+                      key: const ValueKey('bot_freeze_status'),
+                      gameState: gameState,
+                      target: TileOwner.bot,
+                    ),
+                ],
               ),
-              child: Text('${gameState.timeLeft}s'),
             ),
           ],
         ),
-        Row(
-          children: [
-            if (gameState.isPlayerFrozen)
-              StatusBadge(
-                text: gameState.isRapidTapPenaltyActive
-                    ? 'TOO FAST: 1s'
-                    : 'YOU FROZEN!',
-                color: gameState.isRapidTapPenaltyActive
-                    ? Colors.redAccent
-                    : Colors.blueAccent,
-              ),
-            if (gameState.isPlayerFrozen && gameState.isBotFrozen)
-              const SizedBox(width: 8),
-            if (gameState.isBotFrozen)
-              const StatusBadge(
-                  text: 'BOT FROZEN!', color: Colors.orangeAccent),
-          ],
+        const SizedBox(height: 4),
+        LinearProgressIndicator(
+          key: const ValueKey('remaining_time_bar'),
+          value: remaining,
+          minHeight: 6,
+          color: color,
+          backgroundColor: Colors.white12,
+          borderRadius: BorderRadius.circular(3),
+          semanticsLabel:
+              'Remaining time: ${gameState.timeLeft} of ${gameState.maxTime} seconds',
         ),
       ],
     );
@@ -513,6 +542,8 @@ class _Board extends StatelessWidget {
             },
           ),
         ),
+        if (gameState.isPlayerFrozen && !gameState.isRapidTapPenaltyActive)
+          const PlayerFrostOverlay(key: ValueKey('player_frost_overlay')),
         if (countdown != null)
           _StageCountdownOverlay(
             imageUrl: gameState.currentProductImage,

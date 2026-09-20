@@ -1,20 +1,191 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:card_game/domain/game_state.dart';
 import 'package:card_game/main.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUpAll(() async {
+    const directory = String.fromEnvironment('PREVIEW_FONT_DIRECTORY');
+    if (directory.isEmpty) return;
+    final textFont = ByteData.sublistView(
+        await File('$directory/roboto-regular.ttf').readAsBytes());
+    for (final family in ['Ahem', 'monospace', 'Roboto']) {
+      await (FontLoader(family)..addFont(Future.value(textFont))).load();
+    }
+    final icons = ByteData.sublistView(
+        await File('$directory/materialicons-regular.otf').readAsBytes());
+    await (FontLoader('MaterialIcons')..addFont(Future.value(icons))).load();
+  });
+
   setUp(() {
     final previous = HttpOverrides.current;
     HttpOverrides.global = _ImageHttpOverrides();
     addTearDown(() => HttpOverrides.global = previous);
+  });
+
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600)
+  ]) {
+    for (final target in [TileOwner.player, TileOwner.bot]) {
+      testWidgets('$target freeze presentation and pause at $viewport',
+          (tester) async {
+        await tester.binding.setSurfaceSize(viewport);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final game = GameState()..startGame();
+        addTearDown(game.dispose);
+        await tester.pump(const Duration(seconds: 3));
+        game.board[0][0].type = TileType.freeze;
+        game.flipTile(0, 0,
+            target == TileOwner.player ? TileOwner.bot : TileOwner.player);
+        for (final tile in game.board.expand((row) => row)) {
+          tile.type = TileType.normal;
+        }
+        await tester.pumpWidget(ChangeNotifierProvider.value(
+          value: game,
+          child: const RepaintBoundary(
+              key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+        ));
+        final player = target == TileOwner.player;
+        final status = find.byKey(
+            ValueKey(player ? 'player_freeze_status' : 'bot_freeze_status'));
+        final frost = find.byKey(const ValueKey('player_frost_overlay'));
+        expect(status, findsOneWidget);
+        expect(frost, player ? findsOneWidget : findsNothing);
+        expect(
+            find.text(player ? 'YOU FROZEN!' : 'BOT FROZEN!'), findsOneWidget);
+        expect(find.text('2.0s'), findsOneWidget);
+        expect(tester.getSize(find.text('2.0s')).height, lessThanOrEqualTo(16));
+        expect(
+            tester
+                .getSize(find.text(player ? 'YOU FROZEN!' : 'BOT FROZEN!'))
+                .height,
+            lessThanOrEqualTo(16));
+        final board = find.byKey(const ValueKey('board_grid_1'));
+        final boardBounds = tester.getRect(board);
+        if (player) expect(tester.getRect(frost), boardBounds);
+        expect(tester.getRect(status).bottom, lessThan(boardBounds.top));
+        final bar = find.descendant(
+            of: status, matching: find.byType(LinearProgressIndicator));
+        expect(tester.widget<LinearProgressIndicator>(bar).value, 1);
+        if (player && const bool.fromEnvironment('CAPTURE_FREEZE_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport);
+        }
+        final score = game.playerScore;
+        await tester.tap(find.byKey(const ValueKey('tile_0_1')),
+            warnIfMissed: !player);
+        expect(game.playerScore, player ? score : score + 1);
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(find.text('1.5s'), findsOneWidget);
+        expect(tester.widget<LinearProgressIndicator>(bar).value, 0.75);
+        game.setAppActive(false);
+        await tester.pump(const Duration(seconds: 10));
+        game.setAppActive(true);
+        await tester.pump(const Duration(seconds: 10));
+        expect(find.text('1.5s'), findsOneWidget);
+        expect(find.text('PAUSED'), findsOneWidget);
+        expect(tester.getRect(board), boardBounds);
+        await tester.tap(find.text('RESUME'));
+        await tester.pump(const Duration(milliseconds: 1499));
+        expect(status, findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 1));
+        expect(status, findsNothing);
+        expect(frost, findsNothing);
+        game.initializeGame();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  testWidgets('bot freeze refreshes the visible deadline and can unmount early',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(const Duration(seconds: 3));
+    game.board[0][0].type = TileType.freeze;
+    game.flipTile(0, 0, TileOwner.player);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.pump(const Duration(milliseconds: 750));
+    game.board[0][0].type = TileType.freeze;
+    game.flipTile(0, 0, TileOwner.player);
+    await tester.pump();
+    expect(find.text('2.0s'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1250));
+    expect(find.text('0.8s'), findsOneWidget);
+    expect(find.text('BOT FROZEN!'), findsOneWidget);
+    expect(find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    game.initializeGame();
+    await tester.pump(const Duration(seconds: 3));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('penalty has no frost and bot freeze replaces its presentation',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(const Duration(seconds: 3));
+    for (var i = 0; i < 3; i++) {
+      game.flipTile(0, 0, TileOwner.player);
+    }
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    expect(find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 400));
+    game.board[0][0].type = TileType.freeze;
+    game.flipTile(0, 0, TileOwner.bot);
+    await tester.pump();
+    expect(find.text('TOO FAST: 1s'), findsNothing);
+    expect(find.text('YOU FROZEN!'), findsOneWidget);
+    expect(find.text('2.0s'), findsOneWidget);
+    expect(find.byKey(const ValueKey('player_frost_overlay')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('1.4s'), findsOneWidget);
+    game.initializeGame();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
+    expect(find.text('YOU FROZEN!'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('finish removes frost without waiting for the freeze deadline',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(const Duration(seconds: 3));
+    game.board[0][0].type = TileType.freeze;
+    game.flipTile(0, 0, TileOwner.bot);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    game.endGame();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
+    expect(find.text('YOU FROZEN!'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 2000));
+    expect(game.status, GameStateStatus.ended);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
   });
 
   for (final viewport in [
@@ -86,6 +257,215 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
   }
+
+  for (final stage in [1, 2, 3]) {
+    testWidgets('stage $stage time bar follows countdown pause and reset',
+        (tester) async {
+      final game = GameState();
+      addTearDown(game.dispose);
+      while (game.currentStage < stage) {
+        game.startGame();
+        await tester.pump(const Duration(seconds: 3));
+        game.board[0][1].owner = TileOwner.player;
+        game.endGame();
+        await tester.pump(const Duration(milliseconds: 1400));
+        game.selectStage(game.currentStage + 1);
+      }
+      await tester.pumpWidget(ChangeNotifierProvider.value(
+        value: game,
+        child: const NeonFlipApp(),
+      ));
+      _expectTimeBar(tester, game.maxTime, game.maxTime);
+      await tester.tap(find.text('START GAME'));
+      await _checkNewPlay(tester, game);
+      // Hold bot actions while exercising the timer with the real screen.
+      game.board[0][0].type = TileType.freeze;
+      game.flipTile(0, 0, TileOwner.player);
+      await tester.pump();
+      final board = find.byKey(ValueKey('board_grid_$stage'));
+      final boardBounds = tester.getRect(board);
+      await tester.pump(const Duration(milliseconds: 999));
+      _expectTimeBar(tester, game.maxTime, game.maxTime);
+      await tester.pump(const Duration(milliseconds: 1));
+      _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
+      expect(tester.getRect(board), boardBounds);
+      await tester.pump(const Duration(milliseconds: 400));
+      if (stage == 2) {
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      } else {
+        await tester.tap(find.text('PAUSE'));
+      }
+      await tester.pump(const Duration(seconds: 5));
+      _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
+      expect(_timeBar(tester).color, Colors.white54);
+      if (stage == 2) {
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await tester.pump(const Duration(seconds: 5));
+        _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
+        expect(game.status, GameStateStatus.paused);
+      }
+      await tester.tap(find.text('RESUME'));
+      await tester.pump(const Duration(milliseconds: 599));
+      _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
+      await tester.pump(const Duration(milliseconds: 1));
+      _expectTimeBar(tester, game.maxTime - 2, game.maxTime);
+      await tester.tap(find.text('RESET'));
+      await tester.pump();
+      _expectTimeBar(tester, game.maxTime, game.maxTime);
+      expect(_timeBar(tester).color, Colors.amberAccent);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('time bar warns at five seconds and freezes while paused',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(Duration(seconds: 3 + game.maxTime - 6));
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    _expectTimeBar(tester, 6, game.maxTime);
+    expect(_timeBar(tester).color, Colors.amberAccent);
+    await tester.pump(const Duration(seconds: 1));
+    _expectTimeBar(tester, 5, game.maxTime);
+    expect(_timeBar(tester).color, Colors.redAccent);
+    await tester.tap(find.text('PAUSE'));
+    await tester.pump(const Duration(seconds: 10));
+    _expectTimeBar(tester, 5, game.maxTime);
+    expect(_timeBar(tester).color, Colors.white54);
+    await tester.tap(find.text('RESUME'));
+    await tester.pump();
+    expect(_timeBar(tester).color, Colors.redAccent);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('time bar reaches zero at timeout and stays empty in results',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(Duration(seconds: 3 + game.maxTime - 1));
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    _expectTimeBar(tester, 1, game.maxTime);
+    await tester.pump(const Duration(milliseconds: 999));
+    _expectTimeBar(tester, 1, game.maxTime);
+    await tester.pump(const Duration(milliseconds: 1));
+    _expectTimeBar(tester, 0, game.maxTime);
+    expect(game.status, GameStateStatus.finishing);
+    await tester.pump(const Duration(milliseconds: 1400));
+    expect(game.status, GameStateStatus.ended);
+    _expectTimeBar(tester, 0, game.maxTime);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('early board victory preserves the remaining bar until retry',
+      (tester) async {
+    final game = GameState()..startGame();
+    addTearDown(game.dispose);
+    await tester.pump(const Duration(milliseconds: 7250));
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    _expectTimeBar(tester, game.maxTime - 4, game.maxTime);
+    await _clearThroughLastCard(tester, game);
+    _expectTimeBar(tester, game.maxTime - 4, game.maxTime);
+    await _retryThroughButtons(tester, game, 'RETRY STAGE');
+    await _checkNewPlay(tester, game);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600)
+  ]) {
+    testWidgets('time bar fits with simultaneous statuses at $viewport',
+        (tester) async {
+      await tester.binding.setSurfaceSize(viewport);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final game = GameState()..startGame();
+      addTearDown(game.dispose);
+      await tester.pump(const Duration(seconds: 3));
+      game.board[0][1].type = TileType.freeze;
+      game.flipTile(0, 1, TileOwner.player);
+      game.board[0][0].type = TileType.normal;
+      game.flipTile(0, 0, TileOwner.player);
+      game.flipTile(0, 0, TileOwner.player);
+      await tester.pumpWidget(ChangeNotifierProvider.value(
+        value: game,
+        child: const NeonFlipApp(),
+      ));
+      _expectTimeBar(tester, game.maxTime, game.maxTime);
+      final bar =
+          tester.getRect(find.byKey(const ValueKey('remaining_time_bar')));
+      final penalty = tester.getRect(find.text('TOO FAST: 1s'));
+      final frozen = tester.getRect(find.text('BOT FROZEN!'));
+      final digits = tester.getRect(find.text('${game.maxTime}s'));
+      final board = tester.getRect(find.byKey(const ValueKey('board_grid_1')));
+      expect(bar.height, 6);
+      expect(bar.width, viewport.width - 24);
+      expect(bar.top, greaterThanOrEqualTo(penalty.bottom));
+      expect(bar.top, greaterThanOrEqualTo(frozen.bottom));
+      expect(board.top, greaterThan(bar.bottom));
+      expect(penalty.overlaps(digits), isFalse);
+      expect(frozen.overlaps(digits), isFalse);
+      expect(penalty.overlaps(frozen), isFalse);
+      await tester.pump(const Duration(seconds: 1));
+      _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
+      expect(find.text('TOO FAST: 1s'), findsNothing);
+      game.initializeGame();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('penalty badge and board lock follow the one second penalty',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final game = GameState();
+    addTearDown(game.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: game,
+      child: const NeonFlipApp(),
+    ));
+    await tester.tap(find.text('START GAME'));
+    await tester.pump(const Duration(seconds: 3));
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.byKey(const ValueKey('tile_0_0')));
+      await tester.pump();
+    }
+    expect(game.isRapidTapPenaltyActive, isTrue);
+    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    expect(find.text('YOU FROZEN!'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tile_0_1')),
+        warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(game.playerScore, 8);
+    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.text('TOO FAST: 1s'), findsNothing);
+    expect(game.isPlayerFrozen, isFalse);
+    await tester.tap(find.byKey(const ValueKey('tile_0_1')));
+    expect(game.board[0][1].owner, TileOwner.player);
+    expect(game.playerScore, 9);
+    game.initializeGame();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('pause resume and reset buttons preserve or reset the same game',
       (tester) async {
@@ -419,6 +799,7 @@ Future<void> _checkNewPlay(WidgetTester tester, GameState game) async {
     expect(game.status, GameStateStatus.starting);
     expect(find.text('$count'), findsOneWidget);
     expect(game.timeLeft, game.maxTime);
+    _expectTimeBar(tester, game.maxTime, game.maxTime);
     await tester.pump(const Duration(seconds: 1));
   }
   expect(game.status, GameStateStatus.playing);
@@ -434,6 +815,38 @@ Future<void> _checkNewPlay(WidgetTester tester, GameState game) async {
     expect(tile.type, TileType.normal);
   }
   expect(tester.takeException(), isNull);
+}
+
+Future<void> _captureFreezePreview(WidgetTester tester, Size viewport) async {
+  await tester.runAsync(() async {
+    final context = tester.element(find.byKey(const ValueKey('tile_0_0')));
+    final game = context.read<GameState>();
+    await precacheImage(NetworkImage(game.currentProductImage), context);
+    await precacheImage(NetworkImage(game.brandLogoImage), context);
+  });
+  await tester.pump();
+  final boundary = tester.renderObject<RenderRepaintBoundary>(
+      find.byKey(const ValueKey('freeze_preview')));
+  await tester.runAsync(() async {
+    final image = await boundary.toImage();
+    final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!;
+    final file = File(
+        '${Directory.systemTemp.path}/flip_flap_freeze_${viewport.width.toInt()}.png');
+    await file.writeAsBytes(bytes.buffer.asUint8List());
+    image.dispose();
+    debugPrint('Freeze preview: ${file.path}');
+  });
+}
+
+LinearProgressIndicator _timeBar(WidgetTester tester) =>
+    tester.widget(find.byKey(const ValueKey('remaining_time_bar')));
+
+void _expectTimeBar(WidgetTester tester, int remaining, int total) {
+  final bar = _timeBar(tester);
+  expect(bar.value, closeTo(remaining / total, 0.000001));
+  expect(bar.semanticsLabel, 'Remaining time: $remaining of $total seconds');
+  expect(bar.semanticsValue, isNull);
+  expect(find.text('${remaining}s'), findsOneWidget);
 }
 
 Future<void> _showResult(WidgetTester tester, GameState game) async {
@@ -490,7 +903,7 @@ class _ImageRequest extends Fake implements HttpClientRequest {
 
 class _ImageResponse extends Stream<List<int>> implements HttpClientResponse {
   static final _pixel = base64Decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=',
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXY7h8+fJ/AAhvA3nL6ibXAAAAAElFTkSuQmCC',
   );
 
   @override

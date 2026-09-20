@@ -11,6 +11,13 @@ class PausableTimer {
 
   bool get isPending => _remaining != null;
 
+  Duration get remaining {
+    if (_remaining == null) return Duration.zero;
+    if (_deadline == null) return _remaining!;
+    final left = _deadline!.difference(clock.now());
+    return left.isNegative ? Duration.zero : left;
+  }
+
   void start(Duration duration, void Function() callback) {
     cancel();
     _remaining = duration;

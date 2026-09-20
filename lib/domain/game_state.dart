@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
 import 'campaign_config.dart';
@@ -31,6 +32,7 @@ class BoardTile {
 }
 
 class GameState extends ChangeNotifier {
+  static const freezeDuration = Duration(seconds: 2);
   static const double _specialTileSpawnRate = 0.12;
   static const Duration _rapidTapWindow = Duration(milliseconds: 350);
   static const int _rapidTapLimit = 3;
@@ -77,6 +79,12 @@ class GameState extends ChangeNotifier {
   bool get isPlayerFrozen => _isPlayerFrozen;
   bool get isBotFrozen => _isBotFrozen;
   bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
+  Duration get playerFreezeRemaining =>
+      _isPlayerFrozen && !_isRapidTapPenaltyActive
+          ? _playerFreezeTimer.remaining
+          : Duration.zero;
+  Duration get botFreezeRemaining =>
+      _isBotFrozen ? _botFreezeTimer.remaining : Duration.zero;
   int? get startCountdown => _startCountdown;
   int get sessionId => _sessionId;
   bool get canSelectStage =>
@@ -319,7 +327,7 @@ class GameState extends ChangeNotifier {
   void _applyFreezeEffect(TileOwner attacker) {
     if (attacker == TileOwner.player) {
       _isBotFrozen = true;
-      _botFreezeTimer.start(const Duration(seconds: 2), () {
+      _botFreezeTimer.start(freezeDuration, () {
         _isBotFrozen = false;
         notifyListeners();
       });
@@ -328,14 +336,14 @@ class GameState extends ChangeNotifier {
 
     _isPlayerFrozen = true;
     _isRapidTapPenaltyActive = false;
-    _playerFreezeTimer.start(const Duration(seconds: 2), () {
+    _playerFreezeTimer.start(freezeDuration, () {
       _isPlayerFrozen = false;
       notifyListeners();
     });
   }
 
   bool _registerPlayerTap() {
-    final now = DateTime.now();
+    final now = clock.now();
     final previousTap = _lastPlayerTapAt;
     _lastPlayerTapAt = now;
 
