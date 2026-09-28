@@ -124,6 +124,7 @@ void main() {
       expect(game.flipTile(0, 1, TileOwner.player), isFalse);
     }
     await tester.pump(const Duration(milliseconds: 99));
+    expect(game.rapidTapPenaltyRemaining, const Duration(milliseconds: 1));
     expect(game.isPlayerFrozen, isTrue);
     expect(game.isRapidTapPenaltyActive, isTrue);
     expect(game.playerScore, 8);
@@ -131,6 +132,7 @@ void main() {
     expect(game.isPlayerFrozen, isFalse);
     expect(game.isRapidTapPenaltyActive, isFalse);
     expect(game.timeLeft, game.maxTime - 1);
+    expect(game.rapidTapPenaltyRemaining, Duration.zero);
     expect(_normalFlip(game, 0, 1), isTrue);
     expect(_normalFlip(game, 0, 3), isTrue);
     expect(_normalFlip(game, 1, 0), isFalse);
@@ -147,6 +149,7 @@ void main() {
     expect(game.flipTile(0, 0, TileOwner.bot), isTrue);
     expect(game.isRapidTapPenaltyActive, isFalse);
     await tester.pump(const Duration(milliseconds: 600));
+    expect(game.rapidTapPenaltyRemaining, Duration.zero);
     expect(game.isPlayerFrozen, isTrue);
     for (var i = 0; i < 3; i++) {
       expect(game.flipTile(0, 1, TileOwner.player), isFalse);
@@ -210,6 +213,7 @@ void main() {
       expect(game.isPlayerFrozen, isFalse);
       expect(game.isRapidTapPenaltyActive, isFalse);
       var notifications = 0;
+      expect(game.rapidTapPenaltyRemaining, Duration.zero);
       game.addListener(() => notifications++);
       await tester.pump(const Duration(milliseconds: 1399));
       expect(notifications, 0);
@@ -258,4 +262,5 @@ void _triggerPenalty(GameState game) {
     game.flipTile(0, 0, TileOwner.player);
   }
   expect(game.isRapidTapPenaltyActive, isTrue);
+  expect(game.rapidTapPenaltyRemaining, GameState.rapidTapPenaltyDuration);
 }

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../domain/bot_ai.dart';
 import '../domain/game_state.dart';
 import 'freeze_effect.dart';
+import 'penalty_effect.dart';
 
 Color faded(Color color, double opacity) {
   return color.withAlpha((opacity.clamp(0.0, 1.0) * 255).round());
@@ -425,9 +426,9 @@ class _TimerAndStatus extends StatelessWidget {
                 runSpacing: 4,
                 children: [
                   if (gameState.isRapidTapPenaltyActive)
-                    const StatusBadge(
-                      text: 'TOO FAST: 1s',
-                      color: Colors.redAccent,
+                    PenaltyStatus(
+                      key: const ValueKey('player_penalty_status'),
+                      gameState: gameState,
                     )
                   else if (gameState.isPlayerFrozen)
                     FreezeStatus(
@@ -542,6 +543,11 @@ class _Board extends StatelessWidget {
             },
           ),
         ),
+        if (gameState.isRapidTapPenaltyActive)
+          PenaltyBoardOverlay(
+            key: const ValueKey('penalty_board_overlay'),
+            gameState: gameState,
+          ),
         if (gameState.isPlayerFrozen && !gameState.isRapidTapPenaltyActive)
           const PlayerFrostOverlay(key: ValueKey('player_frost_overlay')),
         if (countdown != null)

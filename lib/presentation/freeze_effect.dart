@@ -1,11 +1,11 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../domain/game_state.dart';
+import 'timed_effect_builder.dart';
 
-class FreezeStatus extends StatefulWidget {
+class FreezeStatus extends StatelessWidget {
   const FreezeStatus(
       {super.key, required this.gameState, required this.target});
 
@@ -13,54 +13,22 @@ class FreezeStatus extends StatefulWidget {
   final TileOwner target;
 
   @override
-  State<FreezeStatus> createState() => _FreezeStatusState();
-}
+  Widget build(BuildContext context) => TimedEffectBuilder(
+        gameState: gameState,
+        remaining: () => target == TileOwner.player
+            ? gameState.playerFreezeRemaining
+            : gameState.botFreezeRemaining,
+        builder: _buildStatus,
+      );
 
-class _FreezeStatusState extends State<FreezeStatus> {
-  Timer? _refresh;
-
-  @override
-  void initState() {
-    super.initState();
-    _syncRefresh();
-  }
-
-  @override
-  void didUpdateWidget(FreezeStatus oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _syncRefresh();
-  }
-
-  void _syncRefresh() {
-    if (widget.gameState.status != GameStateStatus.playing) {
-      _refresh?.cancel();
-      _refresh = null;
-    } else {
-      // Refresh only this display; the domain timer alone releases the freeze.
-      _refresh ??= Timer.periodic(const Duration(milliseconds: 100), (_) {
-        setState(() {});
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _refresh?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final player = widget.target == TileOwner.player;
-    final remaining = player
-        ? widget.gameState.playerFreezeRemaining
-        : widget.gameState.botFreezeRemaining;
+  Widget _buildStatus(BuildContext context, Duration remaining) {
+    final player = target == TileOwner.player;
     final seconds = (remaining.inMicroseconds / 100000).ceil() / 10;
     final ratio =
         (remaining.inMicroseconds / GameState.freezeDuration.inMicroseconds)
             .clamp(0.0, 1.0);
     final ink = player ? const Color(0xFF123C50) : const Color(0xFF4B350C);
-    final paused = widget.gameState.status == GameStateStatus.paused;
+    final paused = gameState.status == GameStateStatus.paused;
 
     return Semantics(
       label: player ? 'You are frozen. Controls locked.' : 'Bot is frozen.',

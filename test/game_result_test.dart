@@ -109,6 +109,145 @@ void main() {
     }
   }
 
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600)
+  ]) {
+    for (final stage in [1, 3]) {
+      testWidgets(
+          'stage $stage penalty progress pause and retrigger at $viewport',
+          (tester) async {
+        await tester.binding.setSurfaceSize(viewport);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final game = GameState();
+        addTearDown(game.dispose);
+        while (game.currentStage < stage) {
+          game.startGame();
+          await tester.pump(const Duration(seconds: 3));
+          game.board[0][1].owner = TileOwner.player;
+          game.endGame();
+          await tester.pump(const Duration(milliseconds: 1400));
+          game.selectStage(game.currentStage + 1);
+        }
+        game.startGame();
+        await tester.pump(const Duration(seconds: 3));
+        if (stage == 3) {
+          game.board[0][0].type = TileType.freeze;
+          game.flipTile(0, 0, TileOwner.player);
+          game.board[0][0].type = TileType.normal;
+          game.pauseGame();
+          game.startGame();
+        }
+        await tester.pumpWidget(ChangeNotifierProvider.value(
+          value: game,
+          child: const RepaintBoundary(
+              key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+        ));
+        final board = find.byKey(ValueKey('board_grid_$stage'));
+        final initialBounds = tester.getRect(board);
+        for (var tap = 0; tap < 3; tap++) {
+          await tester.tap(find.byKey(const ValueKey('tile_0_0')));
+          await tester.pump();
+        }
+        final status = find.byKey(const ValueKey('player_penalty_status'));
+        final overlay = find.byKey(const ValueKey('penalty_board_overlay'));
+        final bounds = tester.getRect(board);
+        if (stage == 1) expect(bounds, initialBounds);
+        expect(tester.getRect(overlay), bounds);
+        expect(tester.getRect(status).bottom, lessThan(bounds.top));
+        expect(
+            find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
+        expect(find.byIcon(Icons.pan_tool), findsOneWidget);
+        if (stage == 3) expect(find.text('BOT FROZEN!'), findsOneWidget);
+        _expectPenalty(tester, '1.0s', 1);
+        if (const bool.fromEnvironment('CAPTURE_PENALTY_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'penalty_stage$stage');
+        }
+        await tester.pump(const Duration(milliseconds: 300));
+        _expectPenalty(tester, '0.7s', 0.7);
+        final score = game.playerScore;
+        for (var tap = 0; tap < 3; tap++) {
+          await tester.tap(find.byKey(const ValueKey('tile_0_1')),
+              warnIfMissed: false);
+          await tester.pump();
+        }
+        expect(game.playerScore, score);
+        _expectPenalty(tester, '0.7s', 0.7);
+        await tester.pump(const Duration(milliseconds: 100));
+        game.setAppActive(false);
+        await tester.pump(const Duration(seconds: 10));
+        game.setAppActive(true);
+        await tester.pump(const Duration(seconds: 10));
+        _expectPenalty(tester, '0.6s', 0.6);
+        expect(tester.getRect(board), bounds);
+        await tester.tap(find.text('RESUME'));
+        await tester.pump(const Duration(milliseconds: 599));
+        expect(overlay, findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 1));
+        expect(overlay, findsNothing);
+        expect(status, findsNothing);
+        await tester.tap(find.byKey(const ValueKey('tile_0_1')));
+        expect(game.playerScore, score + 1);
+        game.board[0][0].type = TileType.normal;
+        for (var tap = 0; tap < 2; tap++) {
+          await tester.tap(find.byKey(const ValueKey('tile_0_0')));
+          await tester.pump();
+        }
+        _expectPenalty(tester, '1.0s', 1);
+        game.initializeGame();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  for (final transition in ['reset', 'finish', 'freeze', 'unmount']) {
+    testWidgets('penalty presentation clears on $transition', (tester) async {
+      final game = GameState()..startGame();
+      addTearDown(game.dispose);
+      await tester.pump(const Duration(seconds: 3));
+      for (var tap = 0; tap < 3; tap++) {
+        game.flipTile(0, 0, TileOwner.player);
+      }
+      await tester.pumpWidget(ChangeNotifierProvider.value(
+        value: game,
+        child: const NeonFlipApp(),
+      ));
+      await tester.pump(const Duration(milliseconds: 200));
+      _expectPenalty(tester, '0.8s', 0.8);
+      switch (transition) {
+        case 'reset':
+          game.initializeGame();
+        case 'finish':
+          game.endGame();
+        case 'freeze':
+          game.board[0][0].type = TileType.freeze;
+          game.flipTile(0, 0, TileOwner.bot);
+        case 'unmount':
+          await tester.pumpWidget(const SizedBox.shrink());
+          game.initializeGame();
+      }
+      await tester.pump();
+      expect(game.rapidTapPenaltyRemaining, Duration.zero);
+      expect(find.byKey(const ValueKey('penalty_board_overlay')), findsNothing);
+      expect(find.text('RAPID TAPS'), findsNothing);
+      if (transition == 'freeze') {
+        expect(
+            find.byKey(const ValueKey('player_frost_overlay')), findsOneWidget);
+        expect(find.text('YOU FROZEN!'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 800));
+        expect(game.isPlayerFrozen, isTrue);
+        expect(find.text('1.2s'), findsOneWidget);
+      }
+      game.initializeGame();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 3));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('bot freeze refreshes the visible deadline and can unmount early',
       (tester) async {
     final game = GameState()..startGame();
@@ -147,13 +286,13 @@ void main() {
       value: game,
       child: const NeonFlipApp(),
     ));
-    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    expect(find.text('RAPID TAPS'), findsOneWidget);
     expect(find.byKey(const ValueKey('player_frost_overlay')), findsNothing);
     await tester.pump(const Duration(milliseconds: 400));
     game.board[0][0].type = TileType.freeze;
     game.flipTile(0, 0, TileOwner.bot);
     await tester.pump();
-    expect(find.text('TOO FAST: 1s'), findsNothing);
+    expect(find.text('RAPID TAPS'), findsNothing);
     expect(find.text('YOU FROZEN!'), findsOneWidget);
     expect(find.text('2.0s'), findsOneWidget);
     expect(find.byKey(const ValueKey('player_frost_overlay')), findsOneWidget);
@@ -411,7 +550,7 @@ void main() {
       _expectTimeBar(tester, game.maxTime, game.maxTime);
       final bar =
           tester.getRect(find.byKey(const ValueKey('remaining_time_bar')));
-      final penalty = tester.getRect(find.text('TOO FAST: 1s'));
+      final penalty = tester.getRect(find.text('RAPID TAPS'));
       final frozen = tester.getRect(find.text('BOT FROZEN!'));
       final digits = tester.getRect(find.text('${game.maxTime}s'));
       final board = tester.getRect(find.byKey(const ValueKey('board_grid_1')));
@@ -425,7 +564,7 @@ void main() {
       expect(penalty.overlaps(frozen), isFalse);
       await tester.pump(const Duration(seconds: 1));
       _expectTimeBar(tester, game.maxTime - 1, game.maxTime);
-      expect(find.text('TOO FAST: 1s'), findsNothing);
+      expect(find.text('RAPID TAPS'), findsNothing);
       game.initializeGame();
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
@@ -449,15 +588,15 @@ void main() {
       await tester.pump();
     }
     expect(game.isRapidTapPenaltyActive, isTrue);
-    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    expect(find.text('RAPID TAPS'), findsOneWidget);
     expect(find.text('YOU FROZEN!'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('tile_0_1')),
         warnIfMissed: false);
     await tester.pump(const Duration(milliseconds: 999));
     expect(game.playerScore, 8);
-    expect(find.text('TOO FAST: 1s'), findsOneWidget);
+    expect(find.text('RAPID TAPS'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 1));
-    expect(find.text('TOO FAST: 1s'), findsNothing);
+    expect(find.text('RAPID TAPS'), findsNothing);
     expect(game.isPlayerFrozen, isFalse);
     await tester.tap(find.byKey(const ValueKey('tile_0_1')));
     expect(game.board[0][1].owner, TileOwner.player);
@@ -817,7 +956,21 @@ Future<void> _checkNewPlay(WidgetTester tester, GameState game) async {
   expect(tester.takeException(), isNull);
 }
 
-Future<void> _captureFreezePreview(WidgetTester tester, Size viewport) async {
+void _expectPenalty(WidgetTester tester, String seconds, double ratio) {
+  final status = find.byKey(const ValueKey('player_penalty_status'));
+  expect(find.text('RAPID TAPS'), findsOneWidget);
+  expect(find.descendant(of: status, matching: find.text(seconds)),
+      findsOneWidget);
+  final statusProgress = tester.widget<LinearProgressIndicator>(find.descendant(
+      of: status, matching: find.byType(LinearProgressIndicator)));
+  final boardProgress = tester.widget<LinearProgressIndicator>(
+      find.byKey(const ValueKey('penalty_board_progress')));
+  expect(statusProgress.value, closeTo(ratio, 0.000001));
+  expect(boardProgress.value, closeTo(ratio, 0.000001));
+}
+
+Future<void> _captureFreezePreview(WidgetTester tester, Size viewport,
+    {String name = 'freeze'}) async {
   await tester.runAsync(() async {
     final context = tester.element(find.byKey(const ValueKey('tile_0_0')));
     final game = context.read<GameState>();
@@ -831,10 +984,10 @@ Future<void> _captureFreezePreview(WidgetTester tester, Size viewport) async {
     final image = await boundary.toImage();
     final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!;
     final file = File(
-        '${Directory.systemTemp.path}/flip_flap_freeze_${viewport.width.toInt()}.png');
+        '${Directory.systemTemp.path}/flip_flap_${name}_${viewport.width.toInt()}.png');
     await file.writeAsBytes(bytes.buffer.asUint8List());
     image.dispose();
-    debugPrint('Freeze preview: ${file.path}');
+    debugPrint('Effect preview: ${file.path}');
   });
 }
 

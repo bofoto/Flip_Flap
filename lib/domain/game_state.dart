@@ -36,7 +36,7 @@ class GameState extends ChangeNotifier {
   static const double _specialTileSpawnRate = 0.12;
   static const Duration _rapidTapWindow = Duration(milliseconds: 350);
   static const int _rapidTapLimit = 3;
-  static const Duration _rapidTapPenaltyDuration = Duration(seconds: 1);
+  static const rapidTapPenaltyDuration = Duration(seconds: 1);
   static const Duration _resultDelay = Duration(milliseconds: 1400);
 
   GameState({
@@ -79,6 +79,8 @@ class GameState extends ChangeNotifier {
   bool get isPlayerFrozen => _isPlayerFrozen;
   bool get isBotFrozen => _isBotFrozen;
   bool get isRapidTapPenaltyActive => _isRapidTapPenaltyActive;
+  Duration get rapidTapPenaltyRemaining =>
+      _isRapidTapPenaltyActive ? _playerFreezeTimer.remaining : Duration.zero;
   Duration get playerFreezeRemaining =>
       _isPlayerFrozen && !_isRapidTapPenaltyActive
           ? _playerFreezeTimer.remaining
@@ -358,7 +360,7 @@ class GameState extends ChangeNotifier {
     _rapidTapCount = 0;
     _isPlayerFrozen = true;
     _isRapidTapPenaltyActive = true;
-    _playerFreezeTimer.start(_rapidTapPenaltyDuration, () {
+    _playerFreezeTimer.start(rapidTapPenaltyDuration, () {
       _isPlayerFrozen = false;
       _isRapidTapPenaltyActive = false;
       notifyListeners();
