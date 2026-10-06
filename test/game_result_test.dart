@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:card_game/domain/bot_ai.dart';
+import 'package:card_game/domain/campaign_config.dart';
 import 'package:card_game/domain/game_state.dart';
 import 'package:card_game/main.dart';
+import 'package:card_game/presentation/bot_character.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -32,6 +35,362 @@ void main() {
     HttpOverrides.global = _ImageHttpOverrides();
     addTearDown(() => HttpOverrides.global = previous);
   });
+
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600),
+  ]) {
+    for (final moving in [false, true]) {
+      testWidgets(
+          'BOT-03 frozen character and manual resume moving=$moving $viewport',
+          (tester) async {
+        await tester.binding.setSurfaceSize(viewport);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final game = GameState();
+        addTearDown(game.dispose);
+        await tester.pumpWidget(ChangeNotifierProvider.value(
+          value: game,
+          child: const RepaintBoundary(
+              key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+        ));
+        game.startGame();
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 3));
+        final character = find.byType(BotCharacter);
+        final bot = tester.widget<BotCharacter>(character).botAI!;
+        if (moving) await tester.pump(bot.actionRemaining);
+        await tester.pump(const Duration(milliseconds: 75));
+        final image =
+            find.descendant(of: character, matching: find.byType(Image));
+        final bounds = tester.getRect(image);
+        final remaining = bot.actionRemaining;
+        final target = bot.target!;
+        game.board[0][2].type = TileType.freeze;
+        game.flipTile(0, 2, TileOwner.player);
+        for (final tile in game.board.expand((row) => row)) {
+          tile.type = TileType.normal;
+        }
+        await tester.pump();
+        final ice = find.byKey(const ValueKey('bot_character_freeze'));
+        final snowflake =
+            find.byKey(const ValueKey('bot_character_freeze_icon'));
+        expect(ice, findsOneWidget);
+        expect(snowflake, findsOneWidget);
+        expect(tester.getRect(image), bounds);
+        expect(tester.getRect(ice), bounds);
+        expect(
+            tester
+                .widget<Semantics>(find
+                    .descendant(of: character, matching: find.byType(Semantics))
+                    .first)
+                .properties
+                .value,
+            'Frozen');
+        if (const bool.fromEnvironment('CAPTURE_BOT_FREEZE_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'bot_freeze_${moving ? "moving" : "waiting"}');
+        }
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+        await tester.pump(const Duration(seconds: 5));
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await tester.pump(const Duration(seconds: 5));
+        expect(find.text('PAUSED'), findsOneWidget);
+        expect(game.botFreezeRemaining, GameState.freezeDuration);
+        expect(bot.actionRemaining, remaining);
+        expect(tester.getRect(image), bounds);
+        expect(bot.target, same(target));
+        await tester.tap(find.text('RESUME'));
+        await tester.pump(GameState.freezeDuration);
+        expect(ice, findsNothing);
+        expect(bot.isRunning, isTrue);
+        expect(bot.actionRemaining, remaining);
+        expect(tester.getRect(image), bounds);
+        await tester.pump(remaining);
+        if (!moving) await tester.pump(BotAI.movementDuration);
+        expect(target.owner, TileOwner.bot);
+        expect(bot.arrivalCount, 1);
+        game.initializeGame();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  testWidgets('BOT-01 character stays inside all board corners',
+      (tester) async {
+    for (final size in [4, 5, 6]) {
+      for (final row in [0, size - 1]) {
+        for (final col in [0, size - 1]) {
+          await tester.pumpWidget(MaterialApp(
+            home: Center(
+              child: SizedBox.square(
+                dimension: 240,
+                child: BotCharacter(
+                  imageAsset: CampaignConfig.defaultBotImageAsset,
+                  boardSize: size,
+                  row: row,
+                  col: col,
+                  tileSpacing: 5,
+                ),
+              ),
+            ),
+          ));
+          final boardBounds = tester.getRect(find.byType(BotCharacter));
+          final imageBounds = tester.getRect(find.byType(Image));
+          expect(boardBounds.contains(imageBounds.topLeft), isTrue);
+          expect(boardBounds.contains(imageBounds.bottomRight), isTrue);
+        }
+      }
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600),
+  ]) {
+    for (final stage in [1, 2, 3]) {
+      testWidgets('BOT-01 placement and touch at stage $stage $viewport',
+          (tester) async {
+        await tester.binding.setSurfaceSize(viewport);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final game = GameState();
+        addTearDown(game.dispose);
+        while (game.currentStage < stage) {
+          game.startGame();
+          await tester.pump(const Duration(seconds: 3));
+          game.board[0][1].owner = TileOwner.player;
+          game.endGame();
+          await tester.pump(const Duration(milliseconds: 1400));
+          game.selectStage(game.currentStage + 1);
+        }
+        await tester.pumpWidget(ChangeNotifierProvider.value(
+          value: game,
+          child: const RepaintBoundary(
+              key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+        ));
+        final character = find.byType(BotCharacter);
+        expect(character, findsNothing);
+        game.startGame();
+        await tester.pump();
+        expect(character, findsNothing);
+        await tester.pump(const Duration(seconds: 3));
+        expect(character, findsOneWidget);
+        final initialScore = game.botScore;
+        expect(initialScore, game.boardSize * game.boardSize ~/ 2);
+        final botImage =
+            find.descendant(of: character, matching: find.byType(Image));
+        final bounds = tester.getRect(botImage);
+        final tile = find.byKey(const ValueKey('tile_0_1'));
+        final tileBounds = tester.getRect(tile);
+        final boardBounds =
+            tester.getRect(find.byKey(ValueKey('board_grid_$stage')));
+        expect(bounds.center.dx, closeTo(tileBounds.center.dx, 0.001));
+        expect(bounds.center.dy, closeTo(tileBounds.center.dy, 0.001));
+        expect(bounds.width, closeTo(tileBounds.width * 0.45, 0.001));
+        expect(boardBounds.contains(bounds.topLeft), isTrue);
+        expect(boardBounds.contains(bounds.bottomRight), isTrue);
+        expect(bounds.top,
+            greaterThan(tester.getRect(find.text('${game.maxTime}s')).bottom));
+        if (const bool.fromEnvironment('CAPTURE_BOT_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'bot_stage_$stage');
+        }
+        // Tap the actual character center, not an uncovered corner of the tile.
+        await tester.tapAt(bounds.center);
+        expect(game.board[0][1].owner, TileOwner.player);
+        expect(game.botScore, initialScore - 1);
+        await tester.pump(const Duration(milliseconds: 350));
+        final currentBounds = tester.getRect(botImage);
+        expect(boardBounds.contains(currentBounds.topLeft), isTrue);
+        expect(boardBounds.contains(currentBounds.bottomRight), isTrue);
+        game.pauseGame();
+        await tester.pump();
+        expect(character, findsOneWidget);
+        expect(tester.getRect(botImage), currentBounds);
+        game.initializeGame();
+        await tester.pump();
+        expect(character, findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+  }
+
+  for (final asset in [
+    CampaignConfig.defaultBotImageAsset,
+    'assets/bot/card_bot_mint.png',
+    'assets/bot/missing.png',
+  ]) {
+    testWidgets('BOT-01 theme image and fallback: $asset', (tester) async {
+      final game = GameState(
+        campaign: CampaignConfig(
+          brandName: defaultCampaignConfig.brandName,
+          backImageUrl: defaultCampaignConfig.backImageUrl,
+          stages: defaultCampaignConfig.stages,
+          botImageAsset: asset,
+        ),
+      )..startGame();
+      addTearDown(game.dispose);
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpWidget(ChangeNotifierProvider.value(
+        value: game,
+        child: const RepaintBoundary(
+            key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+      ));
+      final character = find.byType(BotCharacter);
+      final context = tester.element(character);
+      await tester.runAsync(() async {
+        await precacheImage(
+            const AssetImage(CampaignConfig.defaultBotImageAsset), context);
+        await precacheImage(AssetImage(asset), context,
+            onError: (error, stackTrace) {});
+      });
+      await tester.pump();
+      final images = tester.widgetList<Image>(
+          find.descendant(of: character, matching: find.byType(Image)));
+      expect((images.first.image as AssetImage).assetName, asset);
+      final displayed = images.last.image as AssetImage;
+      expect(
+          displayed.assetName,
+          asset.endsWith('missing.png')
+              ? CampaignConfig.defaultBotImageAsset
+              : asset);
+      expect(
+          tester
+              .renderObject<RenderImage>(find
+                  .descendant(of: character, matching: find.byType(RawImage))
+                  .last)
+              .image,
+          isNotNull);
+      expect(game.botScore, 8);
+      expect(game.timeLeft, 30);
+      expect(game.campaign.stages, same(defaultCampaignConfig.stages));
+      if (const bool.fromEnvironment('CAPTURE_BOT_PREVIEW') &&
+          asset.endsWith('mint.png')) {
+        await _captureFreezePreview(tester, const Size(800, 600),
+            name: 'bot_mint');
+      }
+      await tester.tapAt(tester
+          .getRect(find
+              .descendant(of: character, matching: find.byType(RawImage))
+              .last)
+          .center);
+      expect(game.board[0][1].owner, TileOwner.player);
+      game.endGame();
+      await tester.pump();
+      expect(character, findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1400));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final viewport in [
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(800, 600),
+  ]) {
+    for (final stage in [1, 2, 3]) {
+      testWidgets(
+          'BOT-02 rendered movement and touch at stage $stage $viewport',
+          (tester) async {
+        await tester.binding.setSurfaceSize(viewport);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final game = GameState();
+        addTearDown(game.dispose);
+        while (game.currentStage < stage) {
+          game.startGame();
+          await tester.pump(const Duration(seconds: 3));
+          game.board[0][1].owner = TileOwner.player;
+          game.endGame();
+          await tester.pump(const Duration(milliseconds: 1400));
+          game.selectStage(game.currentStage + 1);
+        }
+        await tester.pumpWidget(ChangeNotifierProvider.value(
+          value: game,
+          child: const RepaintBoundary(
+              key: ValueKey('freeze_preview'), child: NeonFlipApp()),
+        ));
+        game.startGame();
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 2));
+        if (stage == 3) {
+          // Hard can choose an owned card; give this geometry test one priority
+          // target so it always checks a journey across the board.
+          game.board.last.last.type = TileType.freeze;
+        }
+        await tester.pump(const Duration(seconds: 1));
+        final character = find.byType(BotCharacter);
+        final bot = tester.widget<BotCharacter>(character).botAI!;
+        final image =
+            find.descendant(of: character, matching: find.byType(Image));
+        final origin = tester.getRect(image).center;
+        final target = bot.target!;
+        final destination = tester
+            .getRect(find.byKey(ValueKey('tile_${target.row}_${target.col}')))
+            .center;
+        final score = game.botScore;
+        await tester.pump(bot.actionRemaining);
+        expect(tester.getRect(image).center, origin);
+        if (const bool.fromEnvironment('CAPTURE_BOT_MOVEMENT_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'bot_move_stage_${stage}_start');
+        }
+        var gameNotifications = 0;
+        game.addListener(() => gameNotifications++);
+        final time = game.timeLeft;
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(
+            (tester.getRect(image).center -
+                    Offset.lerp(origin, destination, 0.25)!)
+                .distance,
+            lessThan(0.001));
+        await tester.pump(const Duration(milliseconds: 50));
+        final middle = tester.getRect(image);
+        expect(
+            (middle.center - Offset.lerp(origin, destination, 0.5)!).distance,
+            lessThan(0.001));
+        expect(middle.center, isNot(origin));
+        expect(game.botScore, score);
+        // Frames refresh only the character; game notifications are timer ticks.
+        expect(gameNotifications, time - game.timeLeft);
+        if (const bool.fromEnvironment('CAPTURE_BOT_MOVEMENT_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'bot_move_stage_${stage}_middle');
+        }
+        await tester.pump(const Duration(milliseconds: 99));
+        // A moving character must still pass a tap to the card beneath it.
+        for (final tile in game.board.expand((row) => row)) {
+          tile.type = TileType.normal;
+        }
+        game.flipTile(target.row, target.col, TileOwner.bot);
+        target.type = TileType.normal;
+        await tester.pump();
+        await tester.tapAt(tester.getRect(image).center);
+        expect(target.owner, TileOwner.player);
+        await tester.pump(const Duration(milliseconds: 1));
+        expect((tester.getRect(image).center - destination).distance,
+            lessThan(0.001));
+        expect(target.owner, TileOwner.bot);
+        expect(game.botScore, score + 1);
+        final board = tester.getRect(find.byKey(ValueKey('board_grid_$stage')));
+        expect(board.contains(middle.topLeft), isTrue);
+        expect(board.contains(middle.bottomRight), isTrue);
+        if (const bool.fromEnvironment('CAPTURE_BOT_MOVEMENT_PREVIEW')) {
+          await _captureFreezePreview(tester, viewport,
+              name: 'bot_move_stage_${stage}_arrival');
+        }
+        game.initializeGame();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 
   for (final viewport in [
     const Size(320, 568),
@@ -976,6 +1335,10 @@ Future<void> _captureFreezePreview(WidgetTester tester, Size viewport,
     final game = context.read<GameState>();
     await precacheImage(NetworkImage(game.currentProductImage), context);
     await precacheImage(NetworkImage(game.brandLogoImage), context);
+    await precacheImage(
+        const AssetImage(CampaignConfig.defaultBotImageAsset), context);
+    await precacheImage(AssetImage(game.campaign.botImageAsset), context,
+        onError: (error, stackTrace) {});
   });
   await tester.pump();
   final boundary = tester.renderObject<RenderRepaintBoundary>(

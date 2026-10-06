@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../domain/bot_ai.dart';
 import '../domain/game_state.dart';
+import 'bot_character.dart';
 import 'freeze_effect.dart';
 import 'penalty_effect.dart';
 
@@ -42,7 +43,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     final gameState = context.read<GameState>();
     if (identical(_gameState, gameState)) return;
     _gameState?.removeListener(_syncBot);
-    _botAI?.stop();
+    _botAI?.dispose();
     _botAI = null;
     _gameState = gameState;
     gameState.addListener(_syncBot);
@@ -53,7 +54,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _gameState?.removeListener(_syncBot);
-    _botAI?.stop();
+    _botAI?.dispose();
     super.dispose();
   }
 
@@ -82,6 +83,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                     child: _Board(
                       gameState: gameState,
                       countdown: gameState.startCountdown,
+                      botAI: _botAI,
                     ),
                   ),
                 ),
@@ -116,7 +118,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     };
 
     if (_botAI == null || _botAI!.difficulty != difficulty) {
-      _botAI?.stop();
+      _botAI?.dispose();
       _botAI = BotAI(gameState: gameState, difficulty: difficulty);
     }
 
@@ -496,13 +498,17 @@ class StatusBadge extends StatelessWidget {
 }
 
 class _Board extends StatelessWidget {
+  static const tileSpacing = 5.0;
+
   const _Board({
     required this.gameState,
     required this.countdown,
+    required this.botAI,
   });
 
   final GameState gameState;
   final int? countdown;
+  final BotAI? botAI;
 
   @override
   Widget build(BuildContext context) {
@@ -519,8 +525,8 @@ class _Board extends StatelessWidget {
             physics: const NeverScrollableScrollPhysics(),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: size,
-              crossAxisSpacing: 5,
-              mainAxisSpacing: 5,
+              crossAxisSpacing: tileSpacing,
+              mainAxisSpacing: tileSpacing,
             ),
             itemCount: size * size,
             itemBuilder: (context, index) {
@@ -543,6 +549,18 @@ class _Board extends StatelessWidget {
             },
           ),
         ),
+        if (size > 1 &&
+            (gameState.status == GameStateStatus.playing ||
+                gameState.status == GameStateStatus.paused))
+          BotCharacter(
+            key: const ValueKey('bot_character_layer'),
+            imageAsset: gameState.campaign.botImageAsset,
+            boardSize: size,
+            row: 0,
+            col: 1,
+            tileSpacing: tileSpacing,
+            botAI: botAI,
+          ),
         if (gameState.isRapidTapPenaltyActive)
           PenaltyBoardOverlay(
             key: const ValueKey('penalty_board_overlay'),

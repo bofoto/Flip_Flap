@@ -1,13 +1,17 @@
 class CampaignConfig {
+  static const defaultBotImageAsset = 'assets/bot/card_bot.png';
+
   const CampaignConfig({
     required this.brandName,
     required this.backImageUrl,
     required this.stages,
+    this.botImageAsset = defaultBotImageAsset,
   });
 
   final String brandName;
   final String backImageUrl;
   final List<CampaignStage> stages;
+  final String botImageAsset;
 }
 
 class CampaignStage {
